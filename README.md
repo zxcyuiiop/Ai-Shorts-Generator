@@ -1,109 +1,104 @@
-# AI YouTube Shorts Generator — Open-Source Opus Clip Alternative
+# AI YouTube Shorts Generator
 
-Turn any long-form YouTube video into multiple viral-ready vertical shorts with one command. Powered end-to-end by [MuAPI](https://muapi.ai) — YouTube download, GPT highlight detection, and smart auto-cropping all run through a single API.
+AI-powered tool to automatically generate engaging YouTube Shorts from long-form videos. Uses GPT-class LLM highlight detection and Whisper to extract the most viral-worthy moments and crop them vertically for social media.
 
-> ### Looking for a fully open-source Opus Clip alternative?
-> Check out **[Open-Generative-AI](https://github.com/Anil-matcha/Open-Generative-AI)** — a free, self-hostable Opus Clip alternative that pairs perfectly with this generator. If you want a UI on top of this pipeline, start there.
+Looking for an api to build your own Opus-clip style product ? Check the api below
 
-This is a clean rewrite of [SamurAIGPT/AI-Youtube-Shorts-Generator](https://github.com/SamurAIGPT/AI-Youtube-Shorts-Generator) using the AI clip logic from [ViralVadoo](https://www.vadoo.tv) and the MuAPI platform — no FaceCrop OpenCV pipeline, no Sieve, no managed Whisper backend. Just three API calls plus local Whisper.
+https://muapi.ai/playground/autocrop
 
----
+https://muapi.ai/playground/ai-clipping
 
-## Why this exists
+![longshorts](https://github.com/user-attachments/assets/3f5d1abf-bf3b-475f-8abf-5e253003453a)
 
-Opus Clip is the standard tool for turning podcasts and long videos into shorts, but it is closed-source, expensive, and hides its prompts and ranking logic. This repo is a transparent, hackable alternative:
+## Features
 
-- **You own the prompts.** The full virality scoring system is in [`shorts_generator/highlights.py`](shorts_generator/highlights.py) — tweak it freely.
-- **You own the costs.** Pay-per-call MuAPI pricing instead of monthly seats.
-- **You own the output.** All clips returned as direct mp4 URLs.
+- **🎬 YouTube In, Vertical Out**: Hand it any YouTube URL — get back N viral-ready 9:16 mp4s
+- **🤖 Virality-Aware Highlight Selection**: Clips ranked on hooks, emotional peaks, opinion bombs, revelation moments, conflict, quotable lines, story peaks, and practical value — not just generic "interesting"
+- **📈 Score + Hook + Reason for Every Clip**: Each highlight comes with a viral score, an opening hook line, and a one-sentence explanation of why it works
+- **🎤 Local Whisper Transcription**: No managed transcription service — your audio stays on your machine
+- **🧩 Long-Video Aware**: Videos over 30 minutes are auto-chunked with overlap so nothing gets missed
+- **♻️ Smart Dedupe**: Overlapping highlights are collapsed by score so you never get two near-duplicate clips
+- **🎯 Smart Vertical Crop**: Auto-cropping handles face tracking and screen recordings automatically — no Haar cascades, no OpenCV setup
+- **📱 Any Aspect Ratio**: 9:16 for TikTok/Reels/Shorts, 1:1 for square, anything else by flag
+- **🧰 CLI + Python Library**: Use it from the shell or import `generate_shorts(...)` into your own pipeline
+- **📦 JSON Output**: `--output-json` dumps the full result (transcript + every candidate highlight + final clip URLs) for downstream automation
 
-For an off-the-shelf UI experience, point [Open-Generative-AI](https://github.com/Anil-matcha/Open-Generative-AI) at this backend.
+## Quick Start (No Setup)
 
----
-
-## How it works
-
-```
-YouTube URL
-   │
-   ▼
-[1] MuAPI /youtube-download   →  hosted source mp4
-   │
-   ▼
-[2] Local Whisper             →  timestamped transcript
-   │
-   ▼
-[3] MuAPI /gpt-5-4            →  ranked viral highlights (with hooks + scores)
-   │
-   ▼
-[4] MuAPI /autocrop           →  vertical 9:16 short for each highlight
-   │
-   ▼
-N viral-ready mp4 URLs
-```
-
-The highlight prompt is built from a virality framework that ranks signals — hook moments, emotional peaks, opinion bombs, revelation moments, conflict, quotable one-liners, story peaks, and practical value. Long videos (>30 min) are auto-chunked with overlap so nothing gets missed.
+Want better results without the setup? The [AI Clipping API](https://muapi.ai/playground/ai-clipping) offers improved clip selection, faster processing, and no dependencies to manage.
 
 ---
 
-## Setup
+## Installation (Self-Hosted)
 
-```bash
-git clone <this-repo>
-cd ai-youtube-shorts-muapi
+### Prerequisites
 
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+- Python 3.10+
+- FFmpeg (required by Whisper)
+- An API key for the clipping/highlight backend
 
-# ffmpeg is required for Whisper
-brew install ffmpeg            # macOS
-# sudo apt install ffmpeg      # Ubuntu
+### Steps
 
-cp .env.example .env
-# edit .env and set MUAPI_API_KEY=...   (get one at https://muapi.ai)
-```
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/SamurAIGPT/AI-Youtube-Shorts-Generator.git
+   cd AI-Youtube-Shorts-Generator
+   ```
 
----
+2. **Install system dependencies:**
+
+   **Ubuntu/Debian:**
+   ```bash
+   sudo apt install -y ffmpeg
+   ```
+
+   **macOS:**
+   ```bash
+   brew install ffmpeg
+   ```
+
+   **Windows:**
+   - Install [FFmpeg](https://ffmpeg.org/download.html) and add it to PATH
+
+3. **Create and activate a virtual environment:**
+   ```bash
+   python3.10 -m venv venv
+   source venv/bin/activate
+   ```
+
+4. **Install Python dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+5. **Set up environment variables:**
+
+   Create a `.env` file in the project root (copy from `.env.example`):
+   ```bash
+   MUAPI_API_KEY=your_api_key_here
+   ```
 
 ## Usage
 
+### Single video
+
 ```bash
-python main.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ" \
-    --num-clips 3 \
+python main.py "https://www.youtube.com/watch?v=VIDEO_ID"
+```
+
+### With options
+
+```bash
+python main.py "https://www.youtube.com/watch?v=VIDEO_ID" \
+    --num-clips 5 \
     --aspect-ratio 9:16 \
-    --whisper-model base
+    --whisper-model base \
+    --output-json result.json
 ```
 
-Output:
+### Local file
 
-```
-========================================================================
-Source video:  https://cdn.muapi.ai/.../video.mp4
-Highlights:    7 candidates → kept top 3
-========================================================================
-
-#1  score=92  124.3s → 187.6s
-     title:  The one mistake that cost me $50K
-     hook:   "Nobody talks about this, but it killed my first startup..."
-     clip:   https://cdn.muapi.ai/.../short_1.mp4
-
-#2  score=88  ...
-```
-
-### Flags
-
-| Flag | Default | Notes |
-|------|---------|-------|
-| `--num-clips` | `3` | How many shorts to render |
-| `--aspect-ratio` | `9:16` | Any ratio; `9:16` for TikTok/Reels, `1:1` for square |
-| `--format` | `720` | Source download resolution: `360` / `480` / `720` / `1080` |
-| `--whisper-model` | `base` | `tiny` / `base` / `small` / `medium` / `large` |
-| `--language` | auto | Force Whisper language code (e.g. `en`) |
-| `--output-json` | — | Write the full result (transcript + all highlights) to a file |
-
----
-
-## Use it as a library
+Drop in a hosted mp4 URL directly via the Python API (the CLI is YouTube-first):
 
 ```python
 from shorts_generator import generate_shorts
@@ -113,42 +108,140 @@ result = generate_shorts(
     num_clips=5,
     aspect_ratio="9:16",
 )
-
 for short in result["shorts"]:
     print(short["score"], short["title"], short["clip_url"])
 ```
 
----
+### Batch processing
 
-## Project structure
+Create a `urls.txt` file with one URL per line, then:
+
+```bash
+xargs -a urls.txt -I{} python main.py "{}"
+```
+
+### CLI flags
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--num-clips` | `3` | How many shorts to render |
+| `--aspect-ratio` | `9:16` | Any ratio; `9:16` for TikTok/Reels, `1:1` for square |
+| `--format` | `720` | Source download resolution: `360` / `480` / `720` / `1080` |
+| `--whisper-model` | `base` | `tiny` / `base` / `small` / `medium` / `large` |
+| `--language` | auto | Force Whisper language code (e.g. `en`) |
+| `--output-json` | — | Dump the full result (transcript + all candidates) to a file |
+
+## How It Works
+
+1. **Download**: Fetches the source video from YouTube
+2. **Transcribe**: Local Whisper produces a timestamped transcript
+3. **Detect content type**: An LLM classifies the video (podcast, interview, tutorial, vlog, etc.) and density, so the prompt can be tuned per content style
+4. **Long-video chunking**: Videos > 30 min are split into 20-min overlapping chunks
+5. **Highlight ranking**: An LLM scans the transcript through a virality framework — hook moments, emotional peaks, opinion bombs, revelations, conflict, quotables, story peaks, practical value — and emits ranked candidates with scores 0–100
+6. **Dedupe**: Overlapping candidates are collapsed by score (>50% overlap → keep the higher score)
+7. **Top-N selection**: The top `--num-clips` candidates are selected
+8. **Auto-crop**: Each highlight is rendered as a vertical short at the requested aspect ratio
+
+**Output**: a list of mp4 URLs plus, for each clip, its title, viral score, hook sentence, and a one-line reason explaining why it should perform.
+
+## Output
+
+Console output looks like:
 
 ```
-ai-youtube-shorts-muapi/
-├── main.py                    CLI entry point
+========================================================================
+Highlights:    7 candidates → kept top 3
+========================================================================
+
+#1  score=92  124.3s → 187.6s
+     title:  The one mistake that cost me $50K
+     hook:   "Nobody talks about this, but it killed my first startup..."
+     clip:   https://.../short_1.mp4
+
+#2  score=88  ...
+```
+
+`--output-json result.json` produces:
+
+```json
+{
+  "source_video_url": "...",
+  "transcript": { "duration": 1873.4, "segments": [...] },
+  "highlights": [ {...}, {...}, ... ],
+  "shorts": [
+    {
+      "title": "...",
+      "start_time": 124.3,
+      "end_time": 187.6,
+      "score": 92,
+      "hook_sentence": "...",
+      "virality_reason": "...",
+      "clip_url": "https://.../short_1.mp4"
+    }
+  ]
+}
+```
+
+## Configuration
+
+### Highlight selection criteria
+Edit `shorts_generator/highlights.py`:
+- **Virality framework**: `VIRALITY_CRITERIA` — the ranked list of signals the LLM optimizes for
+- **System prompt**: `HIGHLIGHT_SYSTEM_PROMPT` — duration sweet spot, hook rules, JSON schema
+- **Chunk size**: `CHUNK_SIZE_SECONDS` (default 1200) — chunk length for long videos
+- **Long-video threshold**: `LONG_VIDEO_THRESHOLD` (default 1800) — videos longer than this are chunked
+- **Chunk overlap**: `CHUNK_OVERLAP_SECONDS` (default 60) — overlap between chunks so cross-boundary clips aren't missed
+
+### Polling / timeout
+Edit `shorts_generator/config.py` (or set env vars):
+- `MUAPI_POLL_INTERVAL` (default 5s) — seconds between job-status polls
+- `MUAPI_POLL_TIMEOUT` (default 1800s) — give up after this long
+
+### Whisper model size
+- `tiny` / `base` — fast, English-leaning, fine for clean speech
+- `small` / `medium` — better for accents, music backgrounds
+- `large` — highest accuracy, much slower; recommended only with a GPU
+
+## Project Structure
+
+```
+AI-Youtube-Shorts-Generator/
+├── main.py                       CLI entry point
 ├── requirements.txt
 ├── .env.example
 └── shorts_generator/
-    ├── __init__.py
-    ├── config.py              loads MUAPI_API_KEY
-    ├── muapi.py               generic submit + poll wrapper
-    ├── downloader.py          /youtube-download
-    ├── transcriber.py         local Whisper
-    ├── highlights.py          /gpt-5-4 + virality prompt + chunking + dedupe
-    ├── clipper.py             /autocrop
-    └── pipeline.py            end-to-end orchestrator
+    ├── config.py                 env / settings
+    ├── muapi.py                  generic submit + poll wrapper
+    ├── downloader.py             YouTube source download
+    ├── transcriber.py            local Whisper
+    ├── highlights.py             LLM virality ranking + chunking + dedupe
+    ├── clipper.py                vertical auto-crop
+    └── pipeline.py               end-to-end orchestrator
 ```
 
----
+## Troubleshooting
 
-## Credits
+### `ffmpeg not found on PATH`
+Whisper needs ffmpeg for audio decoding. Install it with `brew install ffmpeg` (macOS) or `sudo apt install ffmpeg` (Ubuntu).
 
-- Original concept: [SamurAIGPT/AI-Youtube-Shorts-Generator](https://github.com/SamurAIGPT/AI-Youtube-Shorts-Generator)
-- AI clip / virality logic: [ViralVadoo](https://www.vadoo.tv)
-- Underlying APIs: [MuAPI](https://muapi.ai)
-- Companion full-stack Opus Clip alternative: **[Open-Generative-AI](https://github.com/Anil-matcha/Open-Generative-AI)**
+### Whisper produced no segments
+The video may have no detectable speech, or it may be in a language Whisper struggles with. Try `--whisper-model medium` and `--language en` (or the correct language code).
 
----
+### Looking for better results?
+The [AI Clipping API](https://muapi.ai/playground/ai-clipping) uses an improved algorithm that produces higher-quality clips with better highlight detection.
+
+## Contributing
+
+Contributions are welcome! Please fork the repository and submit a pull request.
 
 ## License
 
-MIT
+This project is licensed under the MIT License.
+
+## Related Projects
+
+- [AI Influencer Generator](https://github.com/SamurAIGPT/AI-Influencer-Generator)
+- [Text to Video AI](https://github.com/SamurAIGPT/Text-To-Video-AI)
+- [Faceless Video Generator](https://github.com/SamurAIGPT/Faceless-Video-Generator)
+- [AI B-roll Generator](https://github.com/Anil-matcha/AI-B-roll)
+- [No-code YouTube Shorts Generator](https://www.vadoo.tv/clip-youtube-video)
