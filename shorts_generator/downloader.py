@@ -11,6 +11,15 @@ def _extract_video_url(result: Dict) -> str:
         if isinstance(v, str) and v.startswith("http"):
             return v
 
+    outputs = result.get("outputs")
+    if isinstance(outputs, list) and outputs and isinstance(outputs[0], str) and outputs[0].startswith("http"):
+        return outputs[0]
+    if isinstance(outputs, dict):
+        for key in ("video_url", "url", "output_url"):
+            v = outputs.get(key)
+            if isinstance(v, str) and v.startswith("http"):
+                return v
+
     output = result.get("output") or result.get("result") or {}
     if isinstance(output, dict):
         for key in ("video_url", "url", "output_url"):
