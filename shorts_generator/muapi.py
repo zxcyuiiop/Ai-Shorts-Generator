@@ -23,26 +23,40 @@ def _headers() -> Dict[str, str]:
     }
 
 
-def submit(endpoint: str, payload: Dict[str, Any]) -> str:
-    """POST to /api/v1/{endpoint} and return the request_id."""
+def submit(endpoint: str, payload: Dict[str, Any], retries: int = 3) -> str:
+    """POST to /api/v1/{endpoint} and return the request_id; retry transient errors."""
     url = f"{MUAPI_BASE_URL}/{endpoint.lstrip('/')}"
-    resp = requests.post(url, json=payload, headers=_headers(), timeout=60)
-    if resp.status_code >= 400:
-        raise MuAPIError(f"{endpoint} submit failed [{resp.status_code}]: {resp.text}")
-    data = resp.json()
-    request_id = data.get("request_id") or data.get("id")
-    if not request_id:
-        raise MuAPIError(f"{endpoint} response had no request_id: {data}")
-    return str(request_id)
+    last_err: Optional[Exception] = None
+    for _ in range(retries):
+        try:
+            resp = requests.post(url, json=payload, headers=_headers(), timeout=120)
+            if resp.status_code >= 400:
+                raise MuAPIError(f"{endpoint} submit failed [{resp.status_code}]: {resp.text}")
+            data = resp.json()
+            request_id = data.get("request_id") or data.get("id")
+            if not request_id:
+                raise MuAPIError(f"{endpoint} response had no request_id: {data}")
+            return str(request_id)
+        except (requests.Timeout, requests.ConnectionError) as e:
+            last_err = e
+            time.sleep(2)
+    raise MuAPIError(f"{endpoint} submit failed after {retries} retries: {last_err}")
 
 
-def fetch_result(request_id: str) -> Dict[str, Any]:
-    """GET the latest result for a request_id."""
+def fetch_result(request_id: str, retries: int = 3) -> Dict[str, Any]:
+    """GET the latest result for a request_id; retry on transient timeouts."""
     url = f"{MUAPI_BASE_URL}/predictions/{request_id}/result"
-    resp = requests.get(url, headers=_headers(), timeout=30)
-    if resp.status_code >= 400:
-        raise MuAPIError(f"poll failed [{resp.status_code}]: {resp.text}")
-    return resp.json()
+    last_err: Optional[Exception] = None
+    for _ in range(retries):
+        try:
+            resp = requests.get(url, headers=_headers(), timeout=90)
+            if resp.status_code >= 400:
+                raise MuAPIError(f"poll failed [{resp.status_code}]: {resp.text}")
+            return resp.json()
+        except (requests.Timeout, requests.ConnectionError) as e:
+            last_err = e
+            time.sleep(2)
+    raise MuAPIError(f"poll failed after {retries} retries: {last_err}")
 
 
 def poll(

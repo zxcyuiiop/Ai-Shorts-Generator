@@ -60,8 +60,12 @@ CHUNK_OVERLAP_SECONDS = 60
 
 
 def _call_gpt(prompt: str) -> str:
-    """Send a single text prompt to MuAPI gpt-5-4 and return the raw text."""
-    result = muapi.run("gpt-5-4", {"prompt": prompt}, label="gpt-5-4")
+    """Send a single text prompt to MuAPI gpt-5-mini and return the raw text."""
+    result = muapi.run("gpt-5-mini", {"prompt": prompt}, label="gpt-5-mini")
+
+    outputs = result.get("outputs")
+    if isinstance(outputs, list) and outputs and isinstance(outputs[0], str) and outputs[0].strip():
+        return outputs[0]
 
     for key in ("output", "text", "response", "result", "content"):
         v = result.get(key)
@@ -74,7 +78,7 @@ def _call_gpt(prompt: str) -> str:
         if isinstance(v, list) and v and isinstance(v[0], str):
             return v[0]
 
-    raise RuntimeError(f"Could not extract gpt-5-4 text from response: {result}")
+    raise RuntimeError(f"Could not extract gpt-5-mini text from response: {result}")
 
 
 def _parse_json_loose(raw: str) -> Dict:
