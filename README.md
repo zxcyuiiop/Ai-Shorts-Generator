@@ -15,7 +15,7 @@ https://muapi.ai/playground/ai-clipping
 - **🎬 YouTube In, Vertical Out**: Hand it any YouTube URL — get back N viral-ready 9:16 mp4s
 - **🤖 Virality-Aware Highlight Selection**: Clips ranked on hooks, emotional peaks, opinion bombs, revelation moments, conflict, quotable lines, story peaks, and practical value — not just generic "interesting"
 - **📈 Score + Hook + Reason for Every Clip**: Each highlight comes with a viral score, an opening hook line, and a one-sentence explanation of why it works
-- **🎤 Local Whisper Transcription**: No managed transcription service — your audio stays on your machine
+- **🎤 Cloud Whisper Transcription**: Audio is transcribed via MuAPI's `/openai-whisper` endpoint — no local model download, no GPU needed
 - **🧩 Long-Video Aware**: Videos over 30 minutes are auto-chunked with overlap so nothing gets missed
 - **♻️ Smart Dedupe**: Overlapping highlights are collapsed by score so you never get two near-duplicate clips
 - **🎯 Smart Vertical Crop**: Auto-cropping handles face tracking and screen recordings automatically — no Haar cascades, no OpenCV setup
@@ -34,8 +34,7 @@ Want better results without the setup? The [AI Clipping API](https://muapi.ai/pl
 ### Prerequisites
 
 - Python 3.10+
-- FFmpeg (required by Whisper)
-- An API key for the clipping/highlight backend
+- A MuAPI key (powers download, transcription, highlight ranking, and clipping)
 
 ### Steps
 
@@ -45,33 +44,18 @@ Want better results without the setup? The [AI Clipping API](https://muapi.ai/pl
    cd AI-Youtube-Shorts-Generator
    ```
 
-2. **Install system dependencies:**
-
-   **Ubuntu/Debian:**
-   ```bash
-   sudo apt install -y ffmpeg
-   ```
-
-   **macOS:**
-   ```bash
-   brew install ffmpeg
-   ```
-
-   **Windows:**
-   - Install [FFmpeg](https://ffmpeg.org/download.html) and add it to PATH
-
-3. **Create and activate a virtual environment:**
+2. **Create and activate a virtual environment:**
    ```bash
    python3.10 -m venv venv
    source venv/bin/activate
    ```
 
-4. **Install Python dependencies:**
+3. **Install Python dependencies:**
    ```bash
    pip install -r requirements.txt
    ```
 
-5. **Set up environment variables:**
+4. **Set up environment variables:**
 
    Create a `.env` file in the project root (copy from `.env.example`):
    ```bash
@@ -92,7 +76,6 @@ python main.py "https://www.youtube.com/watch?v=VIDEO_ID"
 python main.py "https://www.youtube.com/watch?v=VIDEO_ID" \
     --num-clips 5 \
     --aspect-ratio 9:16 \
-    --whisper-model base \
     --output-json result.json
 ```
 
@@ -127,14 +110,13 @@ xargs -a urls.txt -I{} python main.py "{}"
 | `--num-clips` | `3` | How many shorts to render |
 | `--aspect-ratio` | `9:16` | Any ratio; `9:16` for TikTok/Reels, `1:1` for square |
 | `--format` | `720` | Source download resolution: `360` / `480` / `720` / `1080` |
-| `--whisper-model` | `base` | `tiny` / `base` / `small` / `medium` / `large` |
 | `--language` | auto | Force Whisper language code (e.g. `en`) |
 | `--output-json` | — | Dump the full result (transcript + all candidates) to a file |
 
 ## How It Works
 
 1. **Download**: Fetches the source video from YouTube
-2. **Transcribe**: Local Whisper produces a timestamped transcript
+2. **Transcribe**: MuAPI `/openai-whisper` produces a timestamped transcript (verbose_json segments)
 3. **Detect content type**: An LLM classifies the video (podcast, interview, tutorial, vlog, etc.) and density, so the prompt can be tuned per content style
 4. **Long-video chunking**: Videos > 30 min are split into 20-min overlapping chunks
 5. **Highlight ranking**: An LLM scans the transcript through a virality framework — hook moments, emotional peaks, opinion bombs, revelations, conflict, quotables, story peaks, practical value — and emits ranked candidates with scores 0–100
@@ -197,10 +179,8 @@ Edit `shorts_generator/config.py` (or set env vars):
 - `MUAPI_POLL_INTERVAL` (default 5s) — seconds between job-status polls
 - `MUAPI_POLL_TIMEOUT` (default 1800s) — give up after this long
 
-### Whisper model size
-- `tiny` / `base` — fast, English-leaning, fine for clean speech
-- `small` / `medium` — better for accents, music backgrounds
-- `large` — highest accuracy, much slower; recommended only with a GPU
+### Whisper transcription
+Audio is transcribed by MuAPI's `/openai-whisper` endpoint (server-side `whisper-1`). Pass `--language <code>` to lock the recognition to a specific language; otherwise it auto-detects.
 
 ## Project Structure
 
@@ -213,7 +193,7 @@ AI-Youtube-Shorts-Generator/
     ├── config.py                 env / settings
     ├── muapi.py                  generic submit + poll wrapper
     ├── downloader.py             YouTube source download
-    ├── transcriber.py            local Whisper
+    ├── transcriber.py            MuAPI /openai-whisper client
     ├── highlights.py             LLM virality ranking + chunking + dedupe
     ├── clipper.py                vertical auto-crop
     └── pipeline.py               end-to-end orchestrator
@@ -221,11 +201,8 @@ AI-Youtube-Shorts-Generator/
 
 ## Troubleshooting
 
-### `ffmpeg not found on PATH`
-Whisper needs ffmpeg for audio decoding. Install it with `brew install ffmpeg` (macOS) or `sudo apt install ffmpeg` (Ubuntu).
-
 ### Whisper produced no segments
-The video may have no detectable speech, or it may be in a language Whisper struggles with. Try `--whisper-model medium` and `--language en` (or the correct language code).
+The video may have no detectable speech, or it may be in a language Whisper struggles with. Try passing `--language en` (or the correct ISO-639-1 code) to skip auto-detection.
 
 ### Looking for better results?
 The [AI Clipping API](https://muapi.ai/playground/ai-clipping) uses an improved algorithm that produces higher-quality clips with better highlight detection.

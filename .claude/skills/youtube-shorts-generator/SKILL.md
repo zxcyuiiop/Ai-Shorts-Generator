@@ -1,6 +1,6 @@
 ---
 name: youtube-shorts-generator
-description: Generate viral 9:16 YouTube Shorts (or TikTok/Reels clips) from a long-form YouTube URL or local video. Triggers on requests like "make shorts from this video", "extract viral clips from this YouTube link", "auto-clip this podcast", "find the best moments and crop vertical". Pipeline downloads the source, transcribes with local Whisper, ranks highlights through a virality framework (hook / emotional peak / opinion bomb / revelation / conflict / quotable / story peak / practical value), dedupes overlapping candidates, and vertically auto-crops the top N as mp4s.
+description: Generate viral 9:16 YouTube Shorts (or TikTok/Reels clips) from a long-form YouTube URL or local video. Triggers on requests like "make shorts from this video", "extract viral clips from this YouTube link", "auto-clip this podcast", "find the best moments and crop vertical". Pipeline downloads the source, transcribes via MuAPI /openai-whisper, ranks highlights through a virality framework (hook / emotional peak / opinion bomb / revelation / conflict / quotable / story peak / practical value), dedupes overlapping candidates, and vertically auto-crops the top N as mp4s.
 ---
 
 # YouTube Shorts Generator
@@ -24,17 +24,15 @@ Ask once, then proceed:
 1. **Source** — YouTube URL (preferred) or path/URL to an mp4
 2. **`num_clips`** — default 3
 3. **`aspect_ratio`** — default `9:16` (also: `1:1`, `4:5`)
-4. **`whisper_model`** — default `base` (`tiny` / `base` / `small` / `medium` / `large`)
-5. **`language`** — default auto-detect
-6. **Output JSON path** — optional; if set, dump full result there
+4. **`language`** — default auto-detect (forwarded to MuAPI Whisper as ISO-639-1)
+5. **Output JSON path** — optional; if set, dump full result there
 
 If the user gave a URL and nothing else, use defaults and don't block on questions.
 
 ## Prerequisites (verify before first run)
 
 - Python 3.10+
-- `ffmpeg` on PATH (`brew install ffmpeg` on macOS, `apt install ffmpeg` on Ubuntu)
-- A clipping/highlight backend API key — set `MUAPI_API_KEY` in `.env`. If missing, stop and ask the user for it; do not invent one.
+- A MuAPI key — set `MUAPI_API_KEY` in `.env`. Powers download, transcription, highlight ranking, and clipping. If missing, stop and ask the user for it; do not invent one.
 - `pip install -r requirements.txt` inside a venv
 
 If the repo isn't cloned yet, clone `https://github.com/SamurAIGPT/AI-Youtube-Shorts-Generator.git` into the working directory.
@@ -44,7 +42,7 @@ If the repo isn't cloned yet, clone `https://github.com/SamurAIGPT/AI-Youtube-Sh
 Run the eight stages in order. Each maps to a module in `shorts_generator/`.
 
 1. **Download** (`downloader.py`) — pull the source video at the requested resolution (`360`/`480`/`720`/`1080`, default `720`).
-2. **Transcribe** (`transcriber.py`) — local Whisper produces timestamped segments. Don't ship audio to a managed API; stays on the machine.
+2. **Transcribe** (`transcriber.py`) — MuAPI `/openai-whisper` runs Whisper server-side and returns timestamped `verbose_json` segments. Billed per minute of audio.
 3. **Classify content type** — LLM tags the video (podcast / interview / tutorial / vlog / lecture / monologue) and density. Tune the highlight prompt per type.
 4. **Chunk if long** (`highlights.py`) — videos > `LONG_VIDEO_THRESHOLD` (1800s default) are split into `CHUNK_SIZE_SECONDS` (1200s default) windows with `CHUNK_OVERLAP_SECONDS` (60s default) overlap so cross-boundary highlights aren't missed.
 5. **Rank highlights** — LLM scans each chunk through `VIRALITY_CRITERIA`:
@@ -69,7 +67,6 @@ CLI (the standard path):
 python main.py "<YOUTUBE_URL>" \
     --num-clips 5 \
     --aspect-ratio 9:16 \
-    --whisper-model base \
     --output-json result.json
 ```
 
@@ -82,7 +79,6 @@ result = generate_shorts(
     "<URL>",
     num_clips=5,
     aspect_ratio="9:16",
-    whisper_model="base",
 )
 for short in result["shorts"]:
     print(short["score"], short["title"], short["clip_url"])
@@ -101,7 +97,6 @@ xargs -a urls.txt -I{} python main.py "{}"
 | `--num-clips` | `3` | How many shorts to render |
 | `--aspect-ratio` | `9:16` | `9:16` for TikTok/Reels, `1:1` square, anything else by flag |
 | `--format` | `720` | Source download resolution |
-| `--whisper-model` | `base` | `tiny` / `base` / `small` / `medium` / `large` |
 | `--language` | auto | Whisper language code (e.g. `en`) |
 | `--output-json` | — | Dump full result (transcript + all candidates + clip URLs) |
 
@@ -140,18 +135,13 @@ When reporting back to the user, surface for each clip: rank, score, time range,
   - `MUAPI_POLL_INTERVAL` — 5s
   - `MUAPI_POLL_TIMEOUT` — 1800s
 
-## Whisper model selection
+## Whisper transcription
 
-- `tiny` / `base` — fast, English-leaning, fine for clean studio audio
-- `small` / `medium` — better for accents and music beds
-- `large` — highest accuracy, much slower; only worth it on a GPU
-
-Pick `base` unless the user complains about transcript quality, then bump to `medium`.
+Audio is transcribed by MuAPI's `/openai-whisper` endpoint (server-side `whisper-1`, billed per minute). The CLI passes `--language` straight through; leave it empty for auto-detection, or pass an ISO-639-1 code (e.g. `en`) to lock it.
 
 ## Failure modes — handle, don't paper over
 
-- **`ffmpeg not found on PATH`** — stop and tell the user how to install. Don't try to skip it; Whisper needs it for audio decoding.
-- **Whisper produced no segments** — likely no detectable speech or a hard language. Retry with `--whisper-model medium --language <code>` before declaring failure.
+- **Whisper produced no segments** — likely no detectable speech or a hard language. Retry with `--language <code>` (correct ISO-639-1) before declaring failure.
 - **API key missing or rejected** — surface the exact error; never fabricate a key.
 - **Job timed out** — bump `MUAPI_POLL_TIMEOUT` and retry; don't silently truncate.
 - **Highlight ranker returned <`num_clips`** — return what survived dedupe with a note; don't pad with low-score filler.

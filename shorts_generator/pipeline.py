@@ -1,6 +1,6 @@
 """End-to-end orchestrator.
 
-YouTube URL  →  MuAPI download  →  local Whisper transcript
+YouTube URL  →  MuAPI download  →  MuAPI /openai-whisper transcript
              →  MuAPI gpt-5-4 highlights  →  MuAPI autocrop clips
 """
 from typing import Dict, List, Optional
@@ -16,7 +16,6 @@ def generate_shorts(
     num_clips: int = 3,
     aspect_ratio: str = "9:16",
     download_format: str = "720",
-    whisper_model: str = "base",
     language: Optional[str] = None,
 ) -> Dict:
     """Run the full pipeline and return a structured result.
@@ -31,13 +30,13 @@ def generate_shorts(
     """
     source_url = download_youtube(youtube_url, fmt=download_format)
 
-    transcript = transcribe(source_url, model_size=whisper_model, language=language)
+    transcript = transcribe(source_url, language=language)
     if not transcript["segments"]:
         raise RuntimeError(
             "Whisper produced no segments. The video may have no detectable speech."
         )
 
-    highlights_result = get_highlights(transcript)
+    highlights_result = get_highlights(transcript, num_clips=num_clips)
     all_highlights: List[Dict] = highlights_result.get("highlights", [])
     if not all_highlights:
         raise RuntimeError("Highlight generator returned zero clips.")

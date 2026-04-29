@@ -57,11 +57,17 @@ Respond ONLY with valid JSON (no markdown, no explanation):
 CHUNK_SIZE_SECONDS = 1200       # 20-min chunks for long videos
 LONG_VIDEO_THRESHOLD = 1800     # chunk videos longer than 30 min
 CHUNK_OVERLAP_SECONDS = 60
+GPT_CALL_TIMEOUT_SECONDS = 300  # cap LLM polls at 5 min — a wedged call should fail fast
 
 
 def _call_gpt(prompt: str) -> str:
     """Send a single text prompt to MuAPI gpt-5-mini and return the raw text."""
-    result = muapi.run("gpt-5-mini", {"prompt": prompt}, label="gpt-5-mini")
+    result = muapi.run(
+        "gpt-5-mini",
+        {"prompt": prompt},
+        label="gpt-5-mini",
+        timeout=GPT_CALL_TIMEOUT_SECONDS,
+    )
 
     outputs = result.get("outputs")
     if isinstance(outputs, list) and outputs and isinstance(outputs[0], str) and outputs[0].strip():
@@ -133,8 +139,18 @@ def chunk_transcript(transcript: Dict) -> List[Dict]:
     return chunks
 
 
-def call_highlight_api(transcript_text: str, content_info: Dict, duration: float, is_chunk: bool = False) -> Dict:
-    min_clips = max(2 if is_chunk else 3, int(duration / 90))
+def call_highlight_api(
+    transcript_text: str,
+    content_info: Dict,
+    duration: float,
+    num_clips: int,
+    is_chunk: bool = False,
+) -> Dict:
+    # Ask for ~2× the user's target so dedupe has headroom, but cap so the model
+    # doesn't have to generate a huge JSON payload (which times out gpt-5-mini).
+    target = max(num_clips * 2, 5)
+    natural_max = max(2 if is_chunk else 3, int(duration / 90))
+    min_clips = min(target, natural_max, 8)
     system = HIGHLIGHT_SYSTEM_PROMPT.format(
         virality_criteria=VIRALITY_CRITERIA,
         content_type=content_info.get("content_type", "other"),
@@ -167,13 +183,13 @@ def dedupe_highlights(highlights: List[Dict]) -> List[Dict]:
     return kept
 
 
-def get_highlights(transcript: Dict) -> Dict:
+def get_highlights(transcript: Dict, num_clips: int = 3) -> Dict:
     """Main entry point — returns {highlights: [...]} sorted by score."""
     duration = transcript.get("duration", 0)
     content_info = detect_content_type(transcript)
     print(f"[highlights] content={content_info.get('content_type')} density={content_info.get('density')} duration={duration:.0f}s", flush=True)
 
-    if duration > LONG_VIDEO_THRESHOLD:
+    if duration >= LONG_VIDEO_THRESHOLD:
         chunks = chunk_transcript(transcript)
         print(f"[highlights] long video — splitting into {len(chunks)} chunks", flush=True)
         all_highlights: List[Dict] = []
@@ -181,7 +197,7 @@ def get_highlights(transcript: Dict) -> Dict:
             offset = chunk.get("_offset", 0)
             text = build_transcript_text(chunk)
             print(f"[highlights] chunk {i + 1}/{len(chunks)} (offset {offset:.0f}s)", flush=True)
-            result = call_highlight_api(text, content_info, chunk["duration"], is_chunk=True)
+            result = call_highlight_api(text, content_info, chunk["duration"], num_clips=num_clips, is_chunk=True)
             for h in result.get("highlights", []):
                 h["start_time"] = float(h["start_time"]) + offset
                 h["end_time"] = float(h["end_time"]) + offset
@@ -189,7 +205,7 @@ def get_highlights(transcript: Dict) -> Dict:
         highlights = dedupe_highlights(all_highlights)
     else:
         text = build_transcript_text(transcript)
-        result = call_highlight_api(text, content_info, duration)
+        result = call_highlight_api(text, content_info, duration, num_clips=num_clips)
         highlights = dedupe_highlights(result.get("highlights", []))
 
     return {"highlights": highlights}

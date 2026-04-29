@@ -85,7 +85,13 @@ def poll(
     raise MuAPIError(f"{label or request_id} timed out after {timeout}s")
 
 
-def run(endpoint: str, payload: Dict[str, Any], label: Optional[str] = None) -> Dict[str, Any]:
+def run(
+    endpoint: str,
+    payload: Dict[str, Any],
+    label: Optional[str] = None,
+    interval: float = POLL_INTERVAL_SECONDS,
+    timeout: float = POLL_TIMEOUT_SECONDS,
+) -> Dict[str, Any]:
     """Submit then poll. Returns the final result payload."""
     request_id = submit(endpoint, payload)
-    return poll(request_id, label=label or endpoint)
+    return poll(request_id, interval=interval, timeout=timeout, label=label or endpoint)
