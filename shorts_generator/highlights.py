@@ -1,16 +1,23 @@
-"""Find the most viral-worthy highlights in a transcript via MuAPI gpt-5-4.
+"""Find the most viral-worthy highlights in a transcript.
 
 Logic ported from ViralVadoo's transcript_analysis/highlight_generator.py:
   - content-type / density detection
   - chunking for long videos with overlap
   - virality-criteria prompt
   - score-based dedupe with overlap suppression
+
+The LLM call is pluggable via the `llm_fn` argument so the same prompts can
+drive either MuAPI (default, --mode api) or a direct OpenAI client
+(--mode local).
 """
 import json
 import re
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional
 
 from . import muapi
+
+
+LLMFn = Callable[[str], str]
 
 
 CONTENT_TYPE_PROMPT = """Analyze this video transcript sample and classify the content type.
@@ -60,8 +67,8 @@ CHUNK_OVERLAP_SECONDS = 60
 GPT_CALL_TIMEOUT_SECONDS = 300  # cap LLM polls at 5 min — a wedged call should fail fast
 
 
-def _call_gpt(prompt: str) -> str:
-    """Send a single text prompt to MuAPI gpt-5-mini and return the raw text."""
+def call_muapi_llm(prompt: str) -> str:
+    """Default LLM backend: MuAPI gpt-5-mini."""
     result = muapi.run(
         "gpt-5-mini",
         {"prompt": prompt},
@@ -102,12 +109,12 @@ def _parse_json_loose(raw: str) -> Dict:
         raise
 
 
-def detect_content_type(transcript: Dict) -> Dict[str, str]:
+def detect_content_type(transcript: Dict, llm_fn: LLMFn = call_muapi_llm) -> Dict[str, str]:
     segments = transcript.get("segments", [])
     sample = " ".join(s["text"] for s in segments[:25])[:3000]
     prompt = f"{CONTENT_TYPE_PROMPT}\n\nTranscript sample:\n{sample}"
     try:
-        raw = _call_gpt(prompt)
+        raw = llm_fn(prompt)
         return _parse_json_loose(raw)
     except Exception:
         return {"content_type": "other", "density": "medium"}
@@ -145,6 +152,7 @@ def call_highlight_api(
     duration: float,
     num_clips: int,
     is_chunk: bool = False,
+    llm_fn: LLMFn = call_muapi_llm,
 ) -> Dict:
     # Ask for ~2× the user's target so dedupe has headroom, but cap so the model
     # doesn't have to generate a huge JSON payload (which times out gpt-5-mini).
@@ -158,7 +166,7 @@ def call_highlight_api(
         num_clips_instruction=f"Generate at least {min_clips} highlights",
     )
     full_prompt = f"{system}\n\nTranscript:\n{transcript_text}"
-    raw = _call_gpt(full_prompt)
+    raw = llm_fn(full_prompt)
     return _parse_json_loose(raw)
 
 
@@ -183,10 +191,19 @@ def dedupe_highlights(highlights: List[Dict]) -> List[Dict]:
     return kept
 
 
-def get_highlights(transcript: Dict, num_clips: int = 3) -> Dict:
-    """Main entry point — returns {highlights: [...]} sorted by score."""
+def get_highlights(
+    transcript: Dict,
+    num_clips: int = 3,
+    llm_fn: Optional[LLMFn] = None,
+) -> Dict:
+    """Main entry point — returns {highlights: [...]} sorted by score.
+
+    `llm_fn` swaps the underlying LLM. Defaults to MuAPI gpt-5-mini; local
+    mode passes in an OpenAI-backed callable.
+    """
+    llm_fn = llm_fn or call_muapi_llm
     duration = transcript.get("duration", 0)
-    content_info = detect_content_type(transcript)
+    content_info = detect_content_type(transcript, llm_fn=llm_fn)
     print(f"[highlights] content={content_info.get('content_type')} density={content_info.get('density')} duration={duration:.0f}s", flush=True)
 
     if duration >= LONG_VIDEO_THRESHOLD:
@@ -197,7 +214,7 @@ def get_highlights(transcript: Dict, num_clips: int = 3) -> Dict:
             offset = chunk.get("_offset", 0)
             text = build_transcript_text(chunk)
             print(f"[highlights] chunk {i + 1}/{len(chunks)} (offset {offset:.0f}s)", flush=True)
-            result = call_highlight_api(text, content_info, chunk["duration"], num_clips=num_clips, is_chunk=True)
+            result = call_highlight_api(text, content_info, chunk["duration"], num_clips=num_clips, is_chunk=True, llm_fn=llm_fn)
             for h in result.get("highlights", []):
                 h["start_time"] = float(h["start_time"]) + offset
                 h["end_time"] = float(h["end_time"]) + offset
@@ -205,7 +222,7 @@ def get_highlights(transcript: Dict, num_clips: int = 3) -> Dict:
         highlights = dedupe_highlights(all_highlights)
     else:
         text = build_transcript_text(transcript)
-        result = call_highlight_api(text, content_info, duration, num_clips=num_clips)
+        result = call_highlight_api(text, content_info, duration, num_clips=num_clips, llm_fn=llm_fn)
         highlights = dedupe_highlights(result.get("highlights", []))
 
     return {"highlights": highlights}

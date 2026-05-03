@@ -27,15 +27,16 @@ Built for creators, agencies, and developers who don't want to pay $20–$300/mo
 ## Features
 
 - **🎬 YouTube In, Vertical Out**: Hand it any YouTube URL — get back N viral-ready 9:16 mp4s
+- **🔀 Two Modes — API (fast) or Local (offline)**: Default `--mode api` uses MuAPI for download/transcription/cropping; `--mode local` runs entirely on your machine with `yt-dlp`, `faster-whisper`, OpenAI, and `ffmpeg`/`opencv` — pick what fits
 - **🤖 Virality-Aware Highlight Selection**: Clips ranked on hooks, emotional peaks, opinion bombs, revelation moments, conflict, quotable lines, story peaks, and practical value — not just generic "interesting"
 - **📈 Score + Hook + Reason for Every Clip**: Each highlight comes with a viral score, an opening hook line, and a one-sentence explanation of why it works
-- **🎤 Cloud Whisper Transcription**: Audio is transcribed via MuAPI's `/openai-whisper` endpoint — no local model download, no GPU needed
+- **🎤 Whisper Transcription, Your Choice**: Cloud (`/openai-whisper` via MuAPI) or local (`faster-whisper`, CPU or CUDA) — same downstream output shape
 - **🧩 Long-Video Aware**: Videos over 30 minutes are auto-chunked with overlap so nothing gets missed
 - **♻️ Smart Dedupe**: Overlapping highlights are collapsed by score so you never get two near-duplicate clips
-- **🎯 Smart Vertical Crop**: Auto-cropping handles face tracking and screen recordings automatically — no Haar cascades, no OpenCV setup
+- **🎯 Smart Vertical Crop**: API mode uses MuAPI's auto-crop; local mode runs OpenCV face tracking with motion smoothing
 - **📱 Any Aspect Ratio**: 9:16 for TikTok/Reels/Shorts, 1:1 for square, anything else by flag
 - **🧰 CLI + Python Library**: Use it from the shell or import `generate_shorts(...)` into your own pipeline
-- **📦 JSON Output**: `--output-json` dumps the full result (transcript + every candidate highlight + final clip URLs) for downstream automation
+- **📦 JSON Output**: `--output-json` dumps the full result (transcript + every candidate highlight + final clip URLs/paths) for downstream automation
 
 ## Quick Start (No Setup)
 
@@ -48,7 +49,8 @@ Don't want to self-host? The [AI Clipping API](https://muapi.ai/playground/ai-cl
 ### Prerequisites
 
 - Python 3.10+
-- A MuAPI key (powers download, transcription, highlight ranking, and clipping)
+- For **API mode (default)**: a MuAPI key — powers download, transcription, highlight ranking, and clipping in a single dependency
+- For **Local mode** (`--mode local`): `ffmpeg` on your PATH and an `OPENAI_API_KEY` (only the LLM step is remote; everything else runs offline)
 
 ### Steps
 
@@ -67,27 +69,46 @@ Don't want to self-host? The [AI Clipping API](https://muapi.ai/playground/ai-cl
 3. **Install Python dependencies:**
    ```bash
    pip install -r requirements.txt
+   # Only if you plan to use --mode local:
+   pip install -r requirements-local.txt
    ```
 
 4. **Set up environment variables:**
 
-   Create a `.env` file in the project root (copy from `.env.example`):
+   Create a `.env` file in the project root:
    ```bash
-   MUAPI_API_KEY=your_api_key_here
+   # API mode (default)
+   MUAPI_API_KEY=your_muapi_key_here
+
+   # Local mode (--mode local) — only the OPENAI key is required
+   OPENAI_API_KEY=your_openai_key_here
+   OPENAI_MODEL=gpt-4o-mini          # optional, default gpt-4o-mini
+   LOCAL_WHISPER_MODEL=base          # tiny / base / small / medium / large-v3
+   LOCAL_WHISPER_DEVICE=auto         # auto / cpu / cuda
+   LOCAL_OUTPUT_DIR=output           # where local mp4s land
    ```
 
 ## Usage
 
-### Single video
+### Single video (API mode — default)
 
 ```bash
 python main.py "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
+### Single video (Local mode — runs offline except for the LLM call)
+
+```bash
+python main.py "https://www.youtube.com/watch?v=VIDEO_ID" --mode local
+```
+
+Local mode writes the rendered shorts to `./output/short_01.mp4`, `short_02.mp4`, … (override with `LOCAL_OUTPUT_DIR`).
+
 ### With options
 
 ```bash
 python main.py "https://www.youtube.com/watch?v=VIDEO_ID" \
+    --mode api \
     --num-clips 5 \
     --aspect-ratio 9:16 \
     --output-json result.json
@@ -121,11 +142,23 @@ xargs -a urls.txt -I{} python main.py "{}"
 
 | Flag | Default | Notes |
 |------|---------|-------|
+| `--mode` | `api` | `api` (MuAPI, fast, no setup) or `local` (yt-dlp + faster-whisper + OpenAI + ffmpeg) |
 | `--num-clips` | `3` | How many shorts to render |
 | `--aspect-ratio` | `9:16` | Any ratio; `9:16` for TikTok/Reels, `1:1` for square |
 | `--format` | `720` | Source download resolution: `360` / `480` / `720` / `1080` |
 | `--language` | auto | Force Whisper language code (e.g. `en`) |
 | `--output-json` | — | Dump the full result (transcript + all candidates) to a file |
+
+### API mode vs Local mode
+
+| Step | API mode (`--mode api`) | Local mode (`--mode local`) |
+|---|---|---|
+| Download | MuAPI `/youtube-download` | `yt-dlp` |
+| Transcription | MuAPI `/openai-whisper` | `faster-whisper` (CPU or CUDA) |
+| Highlight LLM | MuAPI `gpt-5-mini` | OpenAI (`gpt-4o-mini` by default) |
+| Vertical crop | MuAPI `/autocrop` | `ffmpeg` + OpenCV face tracking |
+| Output | hosted URLs | local mp4 paths |
+| Required keys | `MUAPI_API_KEY` | `OPENAI_API_KEY` (+ `ffmpeg` on PATH) |
 
 ## How It Works
 
@@ -201,16 +234,22 @@ Audio is transcribed by MuAPI's `/openai-whisper` endpoint (server-side `whisper
 ```
 AI-Youtube-Shorts-Generator/
 ├── main.py                       CLI entry point
-├── requirements.txt
+├── requirements.txt              core deps (api mode)
+├── requirements-local.txt        optional deps for --mode local
 ├── .env.example
 └── shorts_generator/
-    ├── config.py                 env / settings
+    ├── config.py                 env / settings (MuAPI + OpenAI + Whisper)
     ├── muapi.py                  generic submit + poll wrapper
-    ├── downloader.py             YouTube source download
-    ├── transcriber.py            MuAPI /openai-whisper client
-    ├── highlights.py             LLM virality ranking + chunking + dedupe
-    ├── clipper.py                vertical auto-crop
-    └── pipeline.py               end-to-end orchestrator
+    ├── downloader.py             API mode: YouTube download via MuAPI
+    ├── transcriber.py            API mode: MuAPI /openai-whisper client
+    ├── highlights.py             shared LLM virality ranking (pluggable backend)
+    ├── clipper.py                API mode: MuAPI /autocrop
+    ├── pipeline.py               mode dispatcher (api ↔ local)
+    └── local/                    --mode local backends (offline)
+        ├── downloader.py         yt-dlp download
+        ├── transcriber.py        faster-whisper transcription
+        ├── llm.py                OpenAI chat-completions client
+        └── clipper.py            ffmpeg cut + OpenCV vertical crop
 ```
 
 ## Troubleshooting
