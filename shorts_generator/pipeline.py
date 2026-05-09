@@ -3,8 +3,8 @@
 Two modes:
   * mode="api"   (default) — MuAPI does download / transcribe / LLM / autocrop.
                               Fast, no local deps, pay-per-call.
-  * mode="local"            — yt-dlp + faster-whisper + OpenAI + ffmpeg/opencv.
-                              Self-hosted, OPENAI_API_KEY required for the LLM.
+  * mode="local"            — yt-dlp + faster-whisper + OpenAI or Gemini + ffmpeg/opencv.
+                              Self-hosted, LLM_PROVIDER selects OpenAI or Gemini.
 """
 from typing import Dict, List, Optional
 
@@ -23,7 +23,7 @@ def _run_local(
 ) -> Dict:
     from .local.clipper import crop_highlights_local
     from .local.downloader import download_youtube_local
-    from .local.llm import call_openai_llm
+    from .local.llm import call_local_llm
     from .local.transcriber import transcribe_local
 
     source_path = download_youtube_local(youtube_url, fmt=download_format)
@@ -34,7 +34,7 @@ def _run_local(
             "Whisper produced no segments. The video may have no detectable speech."
         )
 
-    highlights_result = get_highlights(transcript, num_clips=num_clips, llm_fn=call_openai_llm)
+    highlights_result = get_highlights(transcript, num_clips=num_clips, llm_fn=call_local_llm)
     all_highlights: List[Dict] = highlights_result.get("highlights", [])
     if not all_highlights:
         raise RuntimeError("Highlight generator returned zero clips.")
@@ -104,7 +104,7 @@ def generate_shorts(
         download_format: source resolution ("360" / "480" / "720" / "1080").
         language: ISO-639-1 to force Whisper language detection.
         mode: "api" (default, MuAPI) or "local" (yt-dlp + faster-whisper +
-            OpenAI + ffmpeg).
+            OpenAI or Gemini + ffmpeg).
 
     Returns:
         {

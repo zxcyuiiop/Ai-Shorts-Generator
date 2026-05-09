@@ -13,12 +13,12 @@ from shorts_generator import generate_shorts
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="AI YouTube Shorts Generator")
-    parser.add_argument("url", help="YouTube video URL")
+    parser.add_argument("url", help="YouTube URL, file:// URL, or local file path")
     parser.add_argument(
         "--mode",
         choices=["api", "local"],
         default="api",
-        help="api (default, MuAPI) or local (yt-dlp + faster-whisper + OpenAI + ffmpeg).",
+        help="api (default, MuAPI) or local (remote URL, file://, or local path + faster-whisper + LLM provider + ffmpeg).",
     )
     parser.add_argument("--num-clips", type=int, default=3, help="How many shorts to render (default: 3)")
     parser.add_argument("--aspect-ratio", default="9:16", help="Output aspect ratio (default: 9:16)")
