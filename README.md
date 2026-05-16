@@ -27,7 +27,7 @@ Built for creators, agencies, and developers who don't want to pay $20–$300/mo
 ## Features
 
 - **🎬 YouTube In, Vertical Out**: Hand it any YouTube URL — get back N viral-ready 9:16 mp4s
-- **🔀 Two Modes — API (fast) or Local (offline)**: Default `--mode api` uses MuAPI for download/transcription/cropping; `--mode local` runs entirely on your machine with `yt-dlp`, `faster-whisper`, OpenAI, and `ffmpeg`/`opencv` — pick what fits
+- **🔀 Two Modes — API (fast) or Local (offline)**: Default `--mode api` uses MuAPI for download/transcription/cropping; `--mode local` runs entirely on your machine with `yt-dlp`, `faster-whisper`, and `ffmpeg`/`opencv`, and lets you pick OpenAI or Gemini for highlight ranking
 - **🤖 Virality-Aware Highlight Selection**: Clips ranked on hooks, emotional peaks, opinion bombs, revelation moments, conflict, quotable lines, story peaks, and practical value — not just generic "interesting"
 - **📈 Score + Hook + Reason for Every Clip**: Each highlight comes with a viral score, an opening hook line, and a one-sentence explanation of why it works
 - **🎤 Whisper Transcription, Your Choice**: Cloud (`/openai-whisper` via MuAPI) or local (`faster-whisper`, CPU or CUDA) — same downstream output shape
@@ -50,7 +50,7 @@ Don't want to self-host? The [AI Clipping API](https://muapi.ai/playground/ai-cl
 
 - Python 3.10+
 - For **API mode (default)**: a MuAPI key — powers download, transcription, highlight ranking, and clipping in a single dependency
-- For **Local mode** (`--mode local`): `ffmpeg` on your PATH and an `OPENAI_API_KEY` (only the LLM step is remote; everything else runs offline)
+- For **Local mode** (`--mode local`): `ffmpeg` on your PATH and an LLM API key (`OPENAI_API_KEY` or `GEMINI_API_KEY`; only the LLM step is remote)
 
 ### Steps
 
@@ -80,9 +80,12 @@ Don't want to self-host? The [AI Clipping API](https://muapi.ai/playground/ai-cl
    # API mode (default)
    MUAPI_API_KEY=your_muapi_key_here
 
-   # Local mode (--mode local) — only the OPENAI key is required
+   # Local mode (--mode local)
+   LLM_PROVIDER=openai         # openai or gemini
    OPENAI_API_KEY=your_openai_key_here
    OPENAI_MODEL=gpt-4o-mini          # optional, default gpt-4o-mini
+   GEMINI_API_KEY=your_gemini_key_here
+   GEMINI_MODEL=gemini-2.5-flash      # optional, default gemini-2.5-flash
    LOCAL_WHISPER_MODEL=base          # tiny / base / small / medium / large-v3
    LOCAL_WHISPER_DEVICE=auto         # auto / cpu / cuda
    LOCAL_OUTPUT_DIR=output           # where local mp4s land
@@ -114,21 +117,37 @@ python main.py "https://www.youtube.com/watch?v=VIDEO_ID" \
     --output-json result.json
 ```
 
-### Local file
+### Local file or path
 
-Drop in a hosted mp4 URL directly via the Python API (the CLI is YouTube-first):
+In `--mode local`, you can pass a `file://` URL or a direct filesystem path and skip YouTube entirely:
+
+```bash
+python main.py "/Users/you/Videos/input.mp4" --mode local
+python main.py "file:///Users/you/Videos/input.mp4" --mode local
+```
+
+The Python API works the same way:
 
 ```python
 from shorts_generator import generate_shorts
 
 result = generate_shorts(
-    "https://www.youtube.com/watch?v=...",
+    "/Users/you/Videos/input.mp4",
     num_clips=5,
     aspect_ratio="9:16",
+    mode="local",
 )
 for short in result["shorts"]:
     print(short["score"], short["title"], short["clip_url"])
 ```
+
+Local transcription is cached as an `.srt` file in `LOCAL_OUTPUT_DIR` using the
+video's base name. If the cache already exists and is newer than the source
+file, the app reuses it instead of running Whisper again.
+
+Local downloads are also cached in `LOCAL_OUTPUT_DIR` as
+`source_<youtube_id>.mp4` when the input is a YouTube URL. If that file already
+exists, the app skips `yt-dlp` and reuses the cached video.
 
 ### Batch processing
 
@@ -142,7 +161,7 @@ xargs -a urls.txt -I{} python main.py "{}"
 
 | Flag | Default | Notes |
 |------|---------|-------|
-| `--mode` | `api` | `api` (MuAPI, fast, no setup) or `local` (yt-dlp + faster-whisper + OpenAI + ffmpeg) |
+| `--mode` | `api` | `api` (MuAPI, fast, no setup) or `local` (remote URL, `file://`, or local path + faster-whisper + LLM provider + ffmpeg) |
 | `--num-clips` | `3` | How many shorts to render |
 | `--aspect-ratio` | `9:16` | Any ratio; `9:16` for TikTok/Reels, `1:1` for square |
 | `--format` | `720` | Source download resolution: `360` / `480` / `720` / `1080` |
@@ -153,12 +172,12 @@ xargs -a urls.txt -I{} python main.py "{}"
 
 | Step | API mode (`--mode api`) | Local mode (`--mode local`) |
 |---|---|---|
-| Download | MuAPI `/youtube-download` | `yt-dlp` |
+| Download | MuAPI `/youtube-download` | `yt-dlp` for remote URLs, direct file path for local inputs |
 | Transcription | MuAPI `/openai-whisper` | `faster-whisper` (CPU or CUDA) |
-| Highlight LLM | MuAPI `gpt-5-mini` | OpenAI (`gpt-4o-mini` by default) |
+| Highlight LLM | MuAPI `gpt-5-mini` | `LLM_PROVIDER=openai` uses OpenAI (`gpt-4o-mini` by default), `LLM_PROVIDER=gemini` uses Gemini (`gemini-2.5-flash` by default) |
 | Vertical crop | MuAPI `/autocrop` | `ffmpeg` + OpenCV face tracking |
 | Output | hosted URLs | local mp4 paths |
-| Required keys | `MUAPI_API_KEY` | `OPENAI_API_KEY` (+ `ffmpeg` on PATH) |
+| Required keys | `MUAPI_API_KEY` | `OPENAI_API_KEY` or `GEMINI_API_KEY` (+ `ffmpeg` on PATH) |
 
 ## How It Works
 
@@ -238,7 +257,7 @@ AI-Youtube-Shorts-Generator/
 ├── requirements-local.txt        optional deps for --mode local
 ├── .env.example
 └── shorts_generator/
-    ├── config.py                 env / settings (MuAPI + OpenAI + Whisper)
+    ├── config.py                 env / settings (MuAPI + local LLM + Whisper)
     ├── muapi.py                  generic submit + poll wrapper
     ├── downloader.py             API mode: YouTube download via MuAPI
     ├── transcriber.py            API mode: MuAPI /openai-whisper client
@@ -248,7 +267,7 @@ AI-Youtube-Shorts-Generator/
     └── local/                    --mode local backends (offline)
         ├── downloader.py         yt-dlp download
         ├── transcriber.py        faster-whisper transcription
-        ├── llm.py                OpenAI chat-completions client
+        ├── llm.py                OpenAI or Gemini client selector
         └── clipper.py            ffmpeg cut + OpenCV vertical crop
 ```
 

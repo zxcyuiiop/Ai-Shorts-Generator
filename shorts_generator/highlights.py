@@ -7,7 +7,7 @@ Logic ported from ViralVadoo's transcript_analysis/highlight_generator.py:
   - score-based dedupe with overlap suppression
 
 The LLM call is pluggable via the `llm_fn` argument so the same prompts can
-drive either MuAPI (default, --mode api) or a direct OpenAI client
+drive either MuAPI (default, --mode api) or a direct local LLM client
 (--mode local).
 """
 import json
@@ -199,7 +199,7 @@ def get_highlights(
     """Main entry point — returns {highlights: [...]} sorted by score.
 
     `llm_fn` swaps the underlying LLM. Defaults to MuAPI gpt-5-mini; local
-    mode passes in an OpenAI-backed callable.
+    mode passes in a local LLM-backed callable.
     """
     llm_fn = llm_fn or call_muapi_llm
     duration = transcript.get("duration", 0)
