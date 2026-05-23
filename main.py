@@ -8,6 +8,13 @@ import argparse
 import json
 import sys
 
+# Windows uses 'charmap' by default, which can't encode Unicode characters
+# like →. Reconfigure stdout/stderr to UTF-8 so output works on all platforms.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from shorts_generator import generate_shorts
 
 
