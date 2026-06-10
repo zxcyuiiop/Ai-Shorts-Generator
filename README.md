@@ -10,6 +10,14 @@ Built for creators, agencies, and developers who don't want to pay $20–$300/mo
 
 ![longshorts](https://github.com/user-attachments/assets/3f5d1abf-bf3b-475f-8abf-5e253003453a)
 
+<p align="center">
+  <a href="https://github.com/Anil-matcha/awesome-generative-ai-apps">
+    <img src="https://img.shields.io/badge/Part%20of-Awesome%20Generative%20AI%20Apps-FFD700?style=for-the-badge&logo=github&logoColor=black" alt="Awesome Generative AI Apps">
+  </a>
+</p>
+
+> 🎨 **[Explore 50+ more open-source AI apps →](https://github.com/Anil-matcha/awesome-generative-ai-apps)**
+
 ## Why Use This Instead of Opus Clip / Vidyo.ai / Klap?
 
 | | This repo | Opus Clip / Vidyo.ai / Klap / SubMagic |
