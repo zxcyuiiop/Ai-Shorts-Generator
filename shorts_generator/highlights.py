@@ -65,6 +65,7 @@ CHUNK_SIZE_SECONDS = 1200       # 20-min chunks for long videos
 LONG_VIDEO_THRESHOLD = 1800     # chunk videos longer than 30 min
 CHUNK_OVERLAP_SECONDS = 60
 GPT_CALL_TIMEOUT_SECONDS = 300  # cap LLM polls at 5 min — a wedged call should fail fast
+MAX_HIGHLIGHT_API_ATTEMPTS = 3
 
 
 def call_muapi_llm(prompt: str) -> str:
@@ -107,6 +108,56 @@ def _parse_json_loose(raw: str) -> Dict:
         if start != -1 and end != -1:
             return json.loads(text[start:end + 1])
         raise
+
+
+def _coerce_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_int(value: object, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _sanitize_highlights(raw_highlights: object, duration: float) -> List[Dict]:
+    """Normalize model output into the expected shape; skip invalid entries."""
+    if not isinstance(raw_highlights, list):
+        return []
+
+    max_end = duration if duration > 0 else float("inf")
+    cleaned: List[Dict] = []
+    for item in raw_highlights:
+        if not isinstance(item, dict):
+            continue
+
+        start = _coerce_float(item.get("start_time"), default=-1.0)
+        end = _coerce_float(item.get("end_time"), default=-1.0)
+        if start < 0 or end <= start:
+            continue
+
+        if max_end != float("inf"):
+            start = min(start, max_end)
+            end = min(end, max_end)
+            if end <= start:
+                continue
+
+        cleaned.append(
+            {
+                "title": str(item.get("title") or "Untitled Highlight").strip(),
+                "start_time": start,
+                "end_time": end,
+                "score": max(0, min(100, _coerce_int(item.get("score"), default=0))),
+                "hook_sentence": str(item.get("hook_sentence") or "").strip(),
+                "virality_reason": str(item.get("virality_reason") or "").strip(),
+            }
+        )
+
+    return cleaned
 
 
 def detect_content_type(transcript: Dict, llm_fn: LLMFn = call_muapi_llm) -> Dict[str, str]:
@@ -165,9 +216,36 @@ def call_highlight_api(
         density=content_info.get("density", "medium"),
         num_clips_instruction=f"Generate at least {min_clips} highlights",
     )
-    full_prompt = f"{system}\n\nTranscript:\n{transcript_text}"
-    raw = llm_fn(full_prompt)
-    return _parse_json_loose(raw)
+    base_prompt = f"{system}\n\nTranscript:\n{transcript_text}"
+    prompt = base_prompt
+    last_error = "unknown"
+
+    for attempt in range(1, MAX_HIGHLIGHT_API_ATTEMPTS + 1):
+        raw = llm_fn(prompt)
+        try:
+            parsed = _parse_json_loose(raw)
+            highlights = _sanitize_highlights(parsed.get("highlights"), duration=duration)
+            if highlights:
+                return {"highlights": highlights}
+            last_error = "no valid highlights in response"
+        except Exception as e:
+            last_error = str(e)
+
+        if attempt < MAX_HIGHLIGHT_API_ATTEMPTS:
+            print(
+                f"[highlights] invalid model output on attempt {attempt}/{MAX_HIGHLIGHT_API_ATTEMPTS}; retrying",
+                flush=True,
+            )
+            prompt = (
+                base_prompt
+                + "\n\nIMPORTANT: Return ONLY valid JSON with a top-level 'highlights' array."
+                + " Each item must include: title, start_time, end_time, score, hook_sentence, virality_reason."
+                + " No markdown fences, no commentary."
+            )
+
+    raise RuntimeError(
+        f"Highlight generator produced invalid output after {MAX_HIGHLIGHT_API_ATTEMPTS} attempts: {last_error}"
+    )
 
 
 def dedupe_highlights(highlights: List[Dict]) -> List[Dict]:
