@@ -305,3 +305,4 @@ This project is licensed under the MIT License.
 - [Faceless Video Generator](https://github.com/SamurAIGPT/Faceless-Video-Generator)
 - [AI B-roll Generator](https://github.com/Anil-matcha/AI-B-roll)
 - [No-code YouTube Shorts Generator](https://www.vadoo.tv/clip-youtube-video)
+- [ai-creator-academy](https://github.com/Anil-matcha/ai-creator-academy) — free curriculum teaching creators how to monetize AI-generated shorts and video content
