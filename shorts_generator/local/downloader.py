@@ -231,6 +231,74 @@ def _record_download(title: Optional[str], folder_name: str, path: str, source: 
     )
 
 
+def _locate_download_file(ydl, info: dict, out_dir: str, pre_download: Optional[set] = None) -> Optional[str]:
+    """Find the actual file yt-dlp just wrote, robust to bad metadata.
+
+    yt-dlp's prepare_filename trusts info["id"] and info["ext"] blindly: when an
+    extractor yields id="recommended" and ext="NA" (broken/unknown metadata),
+    the produced path is literally 'source_recommended.NA' on disk, which
+    obviously doesn't exist. Try a sequence of candidates, most specific first.
+
+    `pre_download` (optional) is a set of absolute paths that already existed;
+    if provided, files that were already there are ignored when scanning.
+    """
+    # Try the standard prepare_filename first
+    try:
+        path = ydl.prepare_filename(info)
+        if path and os.path.exists(path):
+            return path
+    except Exception:
+        pass
+
+    vid = (info or {}).get("id") or ""
+    ext = (info or {}).get("ext") or ""
+
+    # Reject obviously bogus metadata like id='recommended', ext='NA'
+    bogus_ids = {"na", "recommended", "unknown", "none", ""}
+    if vid and vid.lower() in bogus_ids:
+        vid = ""
+    if ext and ext.upper() == "NA":
+        ext = ""
+
+    if vid:
+        # Try exact source_<id>.<ext> and common fallbacks
+        for e in ([ext] if ext else []) + ["mp4", "mkv", "webm", "mov", "avi"]:
+            if not e or e.upper() == "NA":
+                continue
+            candidate = os.path.join(out_dir, f"source_{vid}.{e}")
+            if os.path.exists(candidate):
+                return candidate
+        # Any extension for this id
+        for name in sorted(os.listdir(out_dir)):
+            if name.startswith(f"source_{vid}.") and ".f" not in name:
+                candidate = os.path.join(out_dir, name)
+                if os.path.isfile(candidate):
+                    return candidate
+
+    # Fallback: find the newest NEW file in out_dir (not in pre_download),
+    # restricted to media files. This catches cases where yt-dlp wrote
+    # something but metadata is completely off.
+    candidates = []
+    try:
+        for name in os.listdir(out_dir):
+            if not name.startswith("source_") or ".f" in name:
+                continue
+            full = os.path.join(out_dir, name)
+            if not os.path.isfile(full):
+                continue
+            if pre_download and os.path.abspath(full) in pre_download:
+                continue
+            if os.path.splitext(name)[1].lower() not in (".mp4", ".mkv", ".webm", ".mov", ".avi", ".mp3", ".m4a"):
+                continue
+            candidates.append(full)
+    except OSError:
+        pass
+    if candidates:
+        return max(candidates, key=os.path.getmtime)
+
+    return None
+
+
 def download_youtube_local(video_url: str, fmt: str = "720", out_dir: Optional[str] = None) -> str:
     """Download a remote URL or return a local file path unchanged."""
     local_path = _resolve_local_path(video_url)
@@ -270,18 +338,58 @@ def download_youtube_local(video_url: str, fmt: str = "720", out_dir: Optional[s
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
+        # Network retries: yt-dlp sometimes returns id='recommended' ext=None
+        # when YouTube gives a degraded/broken response. Retry extracts more reliably.
+        "socket_timeout": 30,
+        "retries": 5,
+        "fragment_retries": 5,
+        "extractor_retries": 3,
     }
+
+    # Snapshot of files in out_dir BEFORE the download so we can detect any new
+    # file that appears after the call. A robust fallback when prepare_filename
+    # gives us garbage like 'source_recommended.NA'.
+    pre_download = set()
+    try:
+        for f in os.listdir(out_dir):
+            full = os.path.join(out_dir, f)
+            if os.path.isfile(full):
+                pre_download.add(os.path.abspath(full))
+    except OSError:
+        pass
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(video_url, download=True)
-        path = ydl.prepare_filename(info)
-        # merge_output_format may rename the extension after merge
-        if not os.path.exists(path):
-            stem, _ = os.path.splitext(path)
-            for ext in (".mp4", ".mkv", ".webm"):
-                if os.path.exists(stem + ext):
-                    path = stem + ext
-                    break
+        # Robustly find the downloaded file: dont trust prepare_filename alone,
+        # because merge_output_format and inconsistent "id"/"ext" metadata
+        # (e.g. some extractors return id="recommended" and ext="NA") can
+        # produce a wrong path like source_recommended.NA.
+        path = _locate_download_file(ydl, info, out_dir, pre_download)
+        if not path or not os.path.exists(path):
+            # Last-ditch: pick newest media file in out_dir.
+            candidates = [
+                os.path.join(out_dir, f)
+                for f in os.listdir(out_dir)
+                if os.path.isfile(os.path.join(out_dir, f))
+                and os.path.splitext(f)[1].lower() in (".mp4", ".mkv", ".webm", ".mov", ".avi", ".mp3", ".m4a")
+                and f.startswith("source_")
+                and ".f" not in f  # skip fragments
+            ]
+            if candidates:
+                path = max(candidates, key=os.path.getmtime)
+        if not path or not os.path.exists(path):
+            # Nothing new appeared -> download actually failed.
+            new_files = [
+                os.path.join(out_dir, f)
+                for f in os.listdir(out_dir)
+                if f.startswith("source_") and os.path.isfile(os.path.join(out_dir, f))
+                and os.path.abspath(os.path.join(out_dir, f)) not in pre_download
+            ]
+            raise FileNotFoundError(
+                f"Downloaded file not found in {out_dir!r}. "
+                f"info_id={info.get('id')!r}, info_ext={info.get('ext')!r}, "
+                f"new_files={new_files!r}"
+            )
 
     summary = _chosen_format_summary(info or {})
     print(f"[download/local] format: {summary}", flush=True)
