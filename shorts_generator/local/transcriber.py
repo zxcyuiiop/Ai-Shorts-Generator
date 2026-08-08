@@ -8,12 +8,12 @@ import re
 from pathlib import Path
 from typing import Dict, Optional
 
-from ..config import LOCAL_OUTPUT_DIR, LOCAL_WHISPER_DEVICE, LOCAL_WHISPER_MODEL
+from ..config import env
 
 
 def _transcript_cache_path(media_path: str) -> Path:
     """Return the .srt cache path for a media file."""
-    cache_dir = Path(LOCAL_OUTPUT_DIR)
+    cache_dir = Path(env("LOCAL_OUTPUT_DIR", "output"))
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir / (Path(media_path).stem + ".srt")
 
@@ -81,17 +81,116 @@ def _load_srt_cache(cache_path: Path) -> Dict:
     return {"duration": duration, "segments": segments}
 
 
-def _resolve_device() -> str:
-    if LOCAL_WHISPER_DEVICE != "auto":
-        return LOCAL_WHISPER_DEVICE
+def _register_nvidia_dll_paths() -> None:
+    """Make pip-installed CUDA libraries findable on Windows.
+
+    nvidia-cublas-cu12 / nvidia-cudnn-cu12 drop their DLLs in
+    site-packages/nvidia/*/bin, which is not on the DLL search path. Without
+    this, ctranslate2 fails with "Library cublas64_12.dll is not found" even
+    though the package is installed.
+
+    Both mechanisms are needed: add_dll_directory only affects loads that pass
+    LOAD_LIBRARY_SEARCH_USER_DIRS, and ctranslate2 resolves cuBLAS with a plain
+    LoadLibrary, which searches PATH instead. No-op off Windows, where the
+    wheels set RPATH correctly.
+    """
+    import sys
+
+    if sys.platform != "win32":
+        return
+
     try:
-        import torch  # type: ignore
-        if torch.cuda.is_available():
-            # Test that CUDA actually works (catches missing cuBLAS/cuDNN libs)
-            torch.zeros(1, device="cuda")
-            return "cuda"
-    except (ImportError, OSError, RuntimeError):
-        pass
+        import nvidia  # type: ignore
+    except ImportError:
+        return
+
+    bin_dirs = []
+    for package_root in nvidia.__path__:
+        root = Path(package_root)
+        if root.is_dir():
+            bin_dirs.extend(str(p) for p in root.glob("*/bin") if p.is_dir())
+
+    if not bin_dirs:
+        return
+
+    if hasattr(os, "add_dll_directory"):
+        for bin_dir in bin_dirs:
+            try:
+                os.add_dll_directory(bin_dir)
+            except (OSError, FileNotFoundError):
+                continue
+
+    current = os.environ.get("PATH", "")
+    missing = [d for d in bin_dirs if d not in current]
+    if missing:
+        os.environ["PATH"] = os.pathsep.join(missing + [current])
+
+
+def _cuda_runtime_ready() -> tuple:
+    """Check whether a CUDA run can actually succeed.
+
+    ctranslate2 reporting a device is not enough: on Windows the cuBLAS/cuDNN
+    DLLs are shipped separately from the driver, and their absence only surfaces
+    deep inside transcribe() as "Library cublas64_12.dll is not found".
+    Returns (ok, reason).
+    """
+    _register_nvidia_dll_paths()
+
+    try:
+        import ctranslate2  # type: ignore
+    except ImportError:
+        return False, "ctranslate2 is not installed"
+
+    try:
+        if ctranslate2.get_cuda_device_count() < 1:
+            return False, "no CUDA device detected"
+    except Exception as e:
+        return False, f"CUDA probe failed: {e}"
+
+    # The compute libraries load lazily, so probe them explicitly.
+    import ctypes
+    import sys
+
+    if sys.platform == "win32":
+        if not _can_load_library(ctypes, "cublas64_12.dll"):
+            return False, "cublas64_12.dll is missing"
+
+    return True, ""
+
+
+def _can_load_library(ctypes_mod, name: str) -> bool:
+    try:
+        ctypes_mod.CDLL(name)
+        return True
+    except OSError:
+        return False
+
+
+CUDA_SETUP_HINT = (
+    "To enable GPU transcription, install the CUDA runtime libraries into this "
+    "environment:\n"
+    "    pip install nvidia-cublas-cu12 nvidia-cudnn-cu12\n"
+    "(they ship the DLLs faster-whisper needs; the NVIDIA driver alone is not enough)"
+)
+
+
+def _resolve_device() -> str:
+    """Pick the transcription device, honouring an explicit GUI/env choice.
+
+    "auto" verifies the CUDA runtime rather than trusting a device count, so it
+    never hands back a device that will fail once transcription starts.
+    """
+    requested = env("LOCAL_WHISPER_DEVICE", "auto").strip().lower()
+    if requested != "auto":
+        if requested == "cuda":
+            # Explicit request still needs the DLL paths registered.
+            _register_nvidia_dll_paths()
+        return requested
+
+    ok, reason = _cuda_runtime_ready()
+    if ok:
+        return "cuda"
+    print(f"[transcribe/local] GPU unavailable ({reason}); using CPU", flush=True)
     return "cpu"
 
 
@@ -125,12 +224,10 @@ def transcribe_local(media_path: str, language: Optional[str] = None) -> Dict:
         ) from e
 
     device = _resolve_device()
-    compute_type = "float16" if device == "cuda" else "int8"
-    print(f"[transcribe/local] faster-whisper model={LOCAL_WHISPER_MODEL} device={device}", flush=True)
+    whisper_model_name = env("LOCAL_WHISPER_MODEL", "base")
+    print(f"[transcribe/local] faster-whisper model={whisper_model_name} device={device}", flush=True)
 
     from ..config import LOCAL_WHISPER_VAD_FILTER, LOCAL_WHISPER_VAD_PARAMETERS
-
-    model = WhisperModel(LOCAL_WHISPER_MODEL, device=device, compute_type=compute_type)
 
     transcribe_kwargs = {
         "audio": media_path,
@@ -144,15 +241,37 @@ def transcribe_local(media_path: str, language: Optional[str] = None) -> Dict:
     else:
         transcribe_kwargs["vad_filter"] = False
 
-    segments_iter, info = model.transcribe(**transcribe_kwargs)
+    def _run(dev: str):
+        """Load the model and drain the segment generator on `dev`.
 
-    segments = []
-    for s in segments_iter:
-        segments.append({
-            "start": float(s.start),
-            "end": float(s.end),
-            "text": (s.text or "").strip(),
-        })
+        The generator must be consumed here, not returned lazily: ctranslate2
+        loads cuBLAS on first use, so a broken CUDA install raises inside
+        iteration rather than at construction. Draining it here is what lets the
+        caller catch the failure and retry on CPU.
+        """
+        compute = "float16" if dev == "cuda" else "int8"
+        model = WhisperModel(whisper_model_name, device=dev, compute_type=compute)
+        segments_iter, info = model.transcribe(**transcribe_kwargs)
+        drained = [
+            {
+                "start": float(s.start),
+                "end": float(s.end),
+                "text": (s.text or "").strip(),
+            }
+            for s in segments_iter
+        ]
+        return drained, info
+
+    try:
+        segments, info = _run(device)
+    except Exception as e:
+        if device != "cuda":
+            raise
+        print(f"[transcribe/local] GPU transcription failed ({e})", flush=True)
+        print(f"[transcribe/local] {CUDA_SETUP_HINT}", flush=True)
+        print("[transcribe/local] retrying on CPU", flush=True)
+        device = "cpu"
+        segments, info = _run(device)
 
     duration = float(getattr(info, "duration", 0.0)) or (segments[-1]["end"] if segments else 0.0)
     print(f"[transcribe/local] {len(segments)} segments, {duration:.0f}s of audio", flush=True)

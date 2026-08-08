@@ -6,5 +6,11 @@ faster-whisper>=1.0.0
 openai>=1.0.0
 google-genai>=1.0.0
 opencv-python>=4.8.0
-# torch is only needed if you want CUDA Whisper. CPU works without it.
-# torch>=2.0
+
+# GPU transcription. faster-whisper needs the CUDA compute libraries, which
+# ship separately from the NVIDIA driver -- without them a cuda run dies with
+# "Library cublas64_12.dll is not found". Harmless to install on a CPU-only
+# machine: the code falls back to CPU when no GPU is present.
+nvidia-cublas-cu12; platform_machine != "aarch64"
+nvidia-cudnn-cu12; platform_machine != "aarch64"
+# torch is not required. Device detection uses ctranslate2 directly.

@@ -28,9 +28,16 @@ def main() -> int:
         help="api (default, MuAPI) or local (remote URL, file://, or local path + faster-whisper + LLM provider + ffmpeg).",
     )
     parser.add_argument("--num-clips", type=int, default=3, help="How many shorts to render (default: 3)")
+    parser.add_argument(
+        "--clip-length",
+        choices=["any", "short", "medium", "long", "extended"],
+        default="any",
+        help="Target clip duration: any (default) / short (<30s) / medium (30-60s) / long (60-90s) / extended (90-180s)",
+    )
     parser.add_argument("--aspect-ratio", default="9:16", help="Output aspect ratio (default: 9:16)")
     parser.add_argument("--format", default="720", help="Source download resolution: 360 / 480 / 720 / 1080 (default: 720)")
     parser.add_argument("--language", default=None, help="Force Whisper language code, e.g. 'en' (default: auto-detect)")
+    parser.add_argument("--llm-provider", default=None, help="Local mode only: openai / gemini / ollama / nim (default: LLM_PROVIDER env)")
     parser.add_argument("--output-json", default=None, help="Write the full result JSON to this path")
     args = parser.parse_args()
 
@@ -42,6 +49,8 @@ def main() -> int:
             download_format=args.format,
             language=args.language,
             mode=args.mode,
+            llm_provider=args.llm_provider,
+            clip_length=args.clip_length,
         )
     except Exception as e:
         print(f"\nFAILED: {e}", file=sys.stderr)

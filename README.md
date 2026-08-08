@@ -7,7 +7,6 @@
 
 Built for creators, agencies, and developers who don't want to pay $20–$300/month or be capped on minutes processed. Uses GPT-class LLM highlight detection and Whisper transcription to extract the most viral-worthy moments and auto-crop them vertically for TikTok, Reels, and Shorts.
 
-<p align="center"><a href="https://www.youtube.com/watch?v=aJT-kRASzfE"><img src="assets/video-demo-thumb.png" width="720"></a></p>
 <p align="center"><a href="https://www.youtube.com/watch?v=aJT-kRASzfE"><b>▶ Watch: Free Open-Source Opus Clip Alternative (Build It in 10 Minutes)</b></a></p>
 
 > **Building your own Opus Clip–style SaaS?** Skip the infra and ship on the same APIs that power this repo:
@@ -40,6 +39,7 @@ Built for creators, agencies, and developers who don't want to pay $20–$300/mo
 
 ## Features
 
+- **🌐 Web Interface**: Browser-based GUI with real-time progress tracking and video preview
 - **🎬 YouTube In, Vertical Out**: Hand it any YouTube URL — get back N viral-ready 9:16 mp4s
 - **🔀 Two Modes — API (fast) or Local (offline)**: Default `--mode api` uses MuAPI for download/transcription/cropping; `--mode local` runs entirely on your machine with `yt-dlp`, `faster-whisper`, and `ffmpeg`/`opencv`, and lets you pick OpenAI or Gemini for highlight ranking
 - **🤖 Virality-Aware Highlight Selection**: Clips ranked on hooks, emotional peaks, opinion bombs, revelation moments, conflict, quotable lines, story peaks, and practical value — not just generic "interesting"
@@ -107,7 +107,44 @@ Don't want to self-host? The [AI Clipping API](https://muapi.ai/playground/ai-cl
 
 ## Usage
 
-### Single video (API mode — default)
+### 🌐 Web Interface (Recommended)
+
+Launch the browser-based GUI for the easiest experience:
+
+**Windows:**
+```bash
+start_gui.bat
+```
+
+**Linux/Mac:**
+```bash
+./start_gui.sh
+```
+
+**Or manually:**
+```bash
+# Activate virtual environment
+venv\Scripts\activate     # Windows
+source venv/bin/activate  # Linux/Mac
+
+# Run the web server
+python app.py
+```
+
+Then open **http://localhost:5000** in your browser.
+
+The web interface provides:
+- ✨ Clean, modern UI with dark/light mode support
+- 📊 Real-time progress tracking
+- 🎬 Video preview for generated clips
+- 📥 One-click download
+- ⚙️ Full control over all parameters
+
+See [GUI_README.md](GUI_README.md) for detailed web interface documentation.
+
+### 💻 CLI
+
+#### Single video (API mode — default)
 
 ```bash
 python main.py "https://www.youtube.com/watch?v=VIDEO_ID"

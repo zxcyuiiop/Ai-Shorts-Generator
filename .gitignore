@@ -1,8 +1,15 @@
 .env
+settings.local.json
 __pycache__/
 *.pyc
 .venv/
 venv/
 output/
 *.mp4
+*.mov
+*.mkv
 .DS_Store
+NIGHT_SESSION_NOTES.md
+.claude/
+TASKS.txt
+TASKS2.txt

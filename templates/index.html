@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI YouTube Shorts Generator</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-text">
+                <h1>🎬 AI YouTube Shorts Generator</h1>
+                <p>Превращайте длинные YouTube-видео в вирусные шорты с помощью ИИ</p>
+            </div>
+            <button id="save-settings-btn" class="btn-secondary" type="button">Сохранить настройки</button>
+        </header>
+
+        <main>
+            <!-- ===== Queue ===== -->
+            <div class="queue-section">
+                <div class="queue-add">
+                    <input
+                        type="text"
+                        id="queue-url"
+                        placeholder="https://www.youtube.com/watch?v=..."
+                        aria-label="URL для очереди"
+                    >
+                    <button id="add-to-queue-btn" class="btn-secondary" type="button">Добавить в очередь</button>
+                    <button type="submit" form="generate-form" id="generate-btn" class="btn-primary">Сгенерировать шорты</button>
+                </div>
+                <div id="queue-list" class="queue-list hidden"></div>
+            </div>
+
+            <form id="generate-form" class="form-card">
+                <div class="form-section">
+                    <h3>Источник видео</h3>
+                    <div class="form-group">
+                        <label for="source_type">Тип источника</label>
+                        <select id="source_type" name="source_type">
+                            <option value="url">YouTube URL</option>
+                            <option value="file">Локальный файл</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group" id="url-group">
+                        <label for="url">YouTube URL *</label>
+                        <input
+                            type="text"
+                            id="url"
+                            name="url"
+                            placeholder="https://www.youtube.com/watch?v=..."
+                        >
+                    </div>
+
+                    <div class="form-group hidden" id="file-group">
+                        <label for="video_file">Видеофайл *</label>
+                        <input
+                            type="file"
+                            id="video_file"
+                            name="video_file"
+                            accept="video/*,.mp4,.mkv,.webm,.avi,.mov"
+                        >
+                        <small class="form-hint">Загрузите видео с компьютера (MP4, MKV, WebM и т.д.)</small>
+                    </div>
+                </div>
+
+                <div class="form-section">
+                    <h3>Режим обработки</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="mode">Режим</label>
+                            <select id="mode" name="mode">
+                                <option value="api">API (быстро, MuAPI)</option>
+                                <option value="local">Локальный (офлайн)</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group" id="llm-provider-group">
+                            <label for="llm_provider">
+                                LLM-провайдер
+                                <span class="label-hint" id="llm-hint">(только локальный режим)</span>
+                            </label>
+                            <select id="llm_provider" name="llm_provider" disabled>
+                                <option value="">MuAPI gpt-5-mini</option>
+                                <option value="openai">OpenAI</option>
+                                <option value="gemini">Gemini</option>
+                                <option value="ollama">Ollama (local)</option>
+                                <option value="nim">NVIDIA NIM</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <details class="form-section collapsible" id="api-keys-section" open>
+                    <summary class="section-header">
+                        <h3>API-ключи и модели</h3>
+                        <span class="toggle-icon">▼</span>
+                    </summary>
+                    <div class="section-content" id="api-keys">
+                        <div class="api-group" id="muapi-group">
+                            <label>MuAPI (режим API)</label>
+                            <input type="password" id="muapi_key" placeholder="Введите ключ MuAPI">
+                        </div>
+
+                        <div class="api-group" id="openai-group">
+                            <label>OpenAI</label>
+                            <input type="password" id="openai_key" placeholder="Введите ключ OpenAI">
+                            <select id="openai_model">
+                                <option value="gpt-4o-mini">GPT-4o Mini (дёшево, быстро)</option>
+                                <option value="gpt-4o">GPT-4o (баланс)</option>
+                                <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                            </select>
+                        </div>
+
+                        <div class="api-group" id="gemini-group">
+                            <label>Gemini</label>
+                            <input type="password" id="gemini_key" placeholder="Введите ключ Gemini">
+                            <select id="gemini_model">
+                                <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                                <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
+                            </select>
+                        </div>
+
+                        <div class="api-group" id="ollama-group">
+                            <label>Ollama</label>
+                            <input type="text" id="ollama_url" placeholder="http://localhost:11434" value="http://localhost:11434">
+                            <input type="text" id="ollama_model" placeholder="Имя модели (напр. llama3.1:8b)" value="llama3.1:8b">
+                        </div>
+
+                        <div class="api-group" id="nim-group">
+                            <label>NVIDIA NIM</label>
+                            <input type="password" id="nim_key" placeholder="Введите ключ NIM (nvapi-...)">
+                            <input type="text" id="nim_url" placeholder="https://integrate.api.nvidia.com/v1" value="https://integrate.api.nvidia.com/v1">
+                            <input
+                                type="text"
+                                id="nim_model"
+                                placeholder="Имя модели (напр. meta/llama-3.1-8b-instruct)"
+                                value="meta/llama-3.1-8b-instruct"
+                                list="nim-model-suggestions"
+                            >
+                            <datalist id="nim-model-suggestions">
+                                <option value="meta/llama-3.1-8b-instruct">Llama 3.1 8B Instruct</option>
+                                <option value="meta/llama-3.1-70b-instruct">Llama 3.1 70B Instruct</option>
+                                <option value="meta/llama-3.1-405b-instruct">Llama 3.1 405B Instruct</option>
+                                <option value="mistralai/mistral-7b-instruct-v0.3">Mistral 7B v0.3</option>
+                                <option value="mistralai/mixtral-8x7b-instruct-v0.1">Mixtral 8x7B</option>
+                                <option value="nvidia/nemotron-4-340b-instruct">Nemotron 340B</option>
+                                <option value="google/gemma-2-9b-it">Gemma 2 9B</option>
+                                <option value="microsoft/phi-3-medium-4k-instruct">Phi-3 Medium</option>
+                            </datalist>
+                        </div>
+                    </div>
+                </details>
+
+                <div class="form-section">
+                    <h3>Настройки вывода</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="num_clips">Количество клипов</label>
+                            <input type="number" id="num_clips" name="num_clips" value="3" min="1" max="10">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="clip_length">Длина клипа</label>
+                            <select id="clip_length" name="clip_length">
+                                <option value="any">Любая (решает ИИ)</option>
+                                <option value="short">До 30 с</option>
+                                <option value="medium">30–60 с</option>
+                                <option value="long">60–90 с</option>
+                                <option value="extended">90–180 с</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="aspect_ratio">Соотношение сторон</label>
+                            <select id="aspect_ratio" name="aspect_ratio">
+                                <option value="9:16">9:16 (TikTok/Reels/Shorts)</option>
+                                <option value="1:1">1:1 (квадрат)</option>
+                                <option value="16:9">16:9 (альбомная)</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="format">Качество источника</label>
+                            <select id="format" name="format">
+                                <option value="360">360p</option>
+                                <option value="480">480p</option>
+                                <option value="720" selected>720p</option>
+                                <option value="1080">1080p</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="language">Язык (необязательно)</label>
+                            <input type="text" id="language" name="language" placeholder="напр. en, ru, es">
+                        </div>
+
+                        <div class="form-group"></div>
+                    </div>
+                </div>
+
+                <div class="form-section">
+                    <h3>Водяной знак (TikTok)</h3>
+                    <div class="overlay-layout">
+                        <div class="overlay-controls">
+                            <div class="form-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="overlay_enabled" name="overlay_enabled" checked>
+                                    <span>Показывать водяной знак</span>
+                                </label>
+                            </div>
+                            <div class="form-group">
+                                <label>Позиция (сетка)</label>
+                                <div class="overlay-pos-grid" id="overlay-pos-grid">
+                                    <button type="button" class="overlay-pos-btn" data-pos="tl" title="Верх-лево"><span>&#8598;</span></button>
+                                    <button type="button" class="overlay-pos-btn" data-pos="tc" title="Верх-центр"><span>&#8593;</span></button>
+                                    <button type="button" class="overlay-pos-btn" data-pos="tr" title="Верх-право"><span>&#8599;</span></button>
+                                    <button type="button" class="overlay-pos-btn" data-pos="ml" title="Середина-лево"><span>&#8592;</span></button>
+                                    <button type="button" class="overlay-pos-btn" data-pos="mc" title="Центр"><span>&#8226;</span></button>
+                                    <button type="button" class="overlay-pos-btn" data-pos="mr" title="Середина-право"><span>&#8594;</span></button>
+                                    <button type="button" class="overlay-pos-btn" data-pos="bl" title="Низ-лево"><span>&#8601;</span></button>
+                                    <button type="button" class="overlay-pos-btn" data-pos="bc" title="Низ-центр"><span>&#8595;</span></button>
+                                    <button type="button" class="overlay-pos-btn" data-pos="br" title="Низ-право"><span>&#8600;</span></button>
+                                </div>
+                                <input type="hidden" id="overlay_position" name="overlay_position" value="br">
+                                <input type="hidden" id="overlay_x" name="overlay_x" value="">
+                                <input type="hidden" id="overlay_y" name="overlay_y" value="">
+                                <small class="form-hint">Перетащите рамку на превью или выберите позицию в сетке</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="overlay_scale">Масштаб <span id="overlay_scale_label" class="label-hint">100%</span></label>
+                                <input type="range" id="overlay_scale" name="overlay_scale" min="10" max="300" step="5" value="100">
+                            </div>
+                            <div class="form-group">
+                                <label for="overlay_margin">Отступ от края (px)</label>
+                                <input type="number" id="overlay_margin" name="overlay_margin" min="0" max="200" value="20">
+                            </div>
+                            <div class="form-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="use_overlay_opencv" name="use_overlay_opencv" checked>
+                                    <span>Использовать OpenCV overlay (надёжнее)</span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="overlay-preview-box">
+                            <canvas id="overlay-preview-canvas" width="180" height="320"></canvas>
+                            <small class="form-hint">Перетащите красную рамку в любое место</small>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-section">
+                    <h3>Обработка</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="silence_cut" name="silence_cut" checked>
+                                <span>Вырезать паузы</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="blur_bars" name="blur_bars" checked>
+                                <span>Размытые полосы (9:16)</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="music-block">
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="music_enabled" name="music_enabled">
+                                <span>Фоновая музыка</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label for="music_upload">Аудиофайл</label>
+                            <div class="music-upload-row">
+                                <input type="file" id="music_upload" accept="audio/*">
+                                <button type="button" id="music_upload_btn" class="btn-secondary">Загрузить</button>
+                            </div>
+                            <div id="music_file_label" class="music-file-label"></div>
+                            <input type="hidden" id="music_file" name="music_file" value="">
+                        </div>
+                        <div class="form-group">
+                            <label for="music_volume">
+                                Громкость музыки
+                                <span id="music_volume_label" class="label-hint">40%</span>
+                            </label>
+                            <input type="range" id="music_volume" name="music_volume" min="0" max="100" step="1" value="40">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-section" id="local-options-row">
+                    <h3>Локальная транскрибация</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="whisper_device">
+                                Устройство транскрибации
+                                <span class="label-hint">(только локальный режим)</span>
+                            </label>
+                            <select id="whisper_device" name="whisper_device" disabled>
+                                <option value="auto">Авто (GPU, если доступен)</option>
+                                <option value="cuda">GPU (CUDA)</option>
+                                <option value="cpu">CPU</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="whisper_model">
+                                Модель Whisper
+                                <span class="label-hint">(только локальный режим)</span>
+                            </label>
+                            <select id="whisper_model" name="whisper_model" disabled>
+                                <option value="tiny">Tiny (быстрее, менее точно)</option>
+                                <option value="base" selected>Base (баланс)</option>
+                                <option value="small">Small (медленнее, точнее)</option>
+                                <option value="medium">Medium (медленно, очень точно)</option>
+                                <option value="large">Large (медленнее всех, лучшее качество)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn-primary hidden" id="generate-submit-hidden">Сгенерировать шорты</button>
+            </form>
+
+            <div id="progress-section" class="hidden">
+                <div class="progress-card">
+                    <div class="progress-header">
+                        <h2>Обработка…</h2>
+                        <span id="elapsed-timer" class="elapsed-timer">0:00</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div id="progress-fill" class="progress-fill"></div>
+                    </div>
+                    <p id="progress-stage" class="progress-stage">Запуск…</p>
+
+                    <details class="log-details">
+                        <summary>Лог пайплайна</summary>
+                        <pre id="pipeline-log" class="pipeline-log"></pre>
+                    </details>
+                </div>
+            </div>
+
+            <!-- ===== Review panel ===== -->
+            <div id="review-section" class="hidden">
+                <div class="review-card">
+                    <div class="review-header">
+                        <h2>Проверка шортов</h2>
+                        <span id="review-counter" class="results-summary"></span>
+                    </div>
+                    <div id="review-body"></div>
+                    <div id="review-done" class="review-done hidden">
+                        <h3>Проверка завершена</h3>
+                        <p>Все клипы просмотрены.</p>
+                        <button type="button" id="review-close-btn" class="btn-secondary">Закрыть</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="results-section" class="hidden">
+                <div class="results-header">
+                    <h2>Сгенерированные шорты</h2>
+                    <span id="results-summary" class="results-summary"></span>
+                </div>
+                <div id="results-grid" class="results-grid"></div>
+            </div>
+
+            <div id="error-section" class="hidden">
+                <div class="error-card">
+                    <button type="button" class="error-close" onclick="this.closest('#error-section').classList.add('hidden')" aria-label="Закрыть">&times;</button>
+                    <h3>Ошибка</h3>
+                    <p id="error-message"></p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div id="toast-root" aria-live="polite"></div>
+
+    <script>
+        // Watermark overlay live preview + free-drag positioning
+        // (mirrors the server overlay math from shorts_generator/local/clipper.py).
+        const overlayEnabledInput = document.getElementById('overlay_enabled');
+        const posInput = document.getElementById('overlay_position');
+        const posGrid = document.getElementById('overlay-pos-grid');
+        const overlayXInput = document.getElementById('overlay_x');
+        const overlayYInput = document.getElementById('overlay_y');
+        const marginInput = document.getElementById('overlay_margin');
+        const scaleInput = document.getElementById('overlay_scale');
+        const scaleLabel = document.getElementById('overlay_scale_label');
+        const canvas = document.getElementById('overlay-preview-canvas');
+        const ctx = canvas.getContext('2d');
+
+        // Watermark source is portrait 1080x1920; the canvas is 180x320.
+        const OVERLAY_SRC_W = 1080, OVERLAY_SRC_H = 1920;
+
+        let dragging = false;
+        let overlayRect = { left: 0, top: 0, w: 0, h: 0 };
+
+        function hasFreePos() {
+            return overlayXInput.value !== '' && overlayYInput.value !== '';
+        }
+
+        function setActivePosButton() {
+            posGrid.querySelectorAll('.overlay-pos-btn').forEach(btn => {
+                btn.classList.toggle('active', !hasFreePos() && btn.dataset.pos === posInput.value);
+            });
+        }
+
+        function updateLabels() {
+            scaleLabel.textContent = (parseInt(scaleInput.value) / 100) + 'x';
+        }
+
+        // Compute the watermark rect in *canvas* pixels for the current settings.
+        // Scale/margin are respected; when overlay_x/y (center fractions) are set
+        // the rect is centered there and clamped inside the frame.
+        function computeOverlayRect() {
+            const margin = parseInt(marginInput.value, 10) || 0;
+            const badgeScale = (parseFloat(scaleInput.value) || 100) / 100;
+            const pos = posInput.value || 'br';
+
+            const videoW = canvas.width;   // 180
+            const videoH = canvas.height;  // 320
+            const pxScale = videoW / 1080;
+            const marginPx = margin * pxScale;
+
+            let overlayW = OVERLAY_SRC_W * badgeScale;
+            let overlayH = OVERLAY_SRC_H * badgeScale;
+            if (overlayW > 1080 || overlayH > 1920) {
+                const fit = Math.min(1080 / overlayW, 1920 / overlayH);
+                overlayW = Math.max(2, Math.floor(overlayW * fit));
+                overlayH = Math.max(2, Math.floor(overlayH * fit));
+            }
+            const pw = overlayW * pxScale;
+            const ph = overlayH * pxScale;
+
+            let left, top;
+            if (hasFreePos()) {
+                const cx = parseFloat(overlayXInput.value) * videoW;
+                const cy = parseFloat(overlayYInput.value) * videoH;
+                left = cx - pw / 2;
+                top = cy - ph / 2;
+            } else {
+                const col = pos[1];
+                const row = pos[0];
+                if (col === 'l') left = marginPx;
+                else if (col === 'r') left = videoW - pw - marginPx;
+                else left = (videoW - pw) / 2;
+                if (row === 't') top = marginPx;
+                else if (row === 'b') top = videoH - ph - marginPx;
+                else top = (videoH - ph) / 2;
+            }
+
+            left = Math.max(0, Math.min(left, videoW - pw));
+            top = Math.max(0, Math.min(top, videoH - ph));
+            return { left, top, w: pw, h: ph };
+        }
+
+        function drawPreview() {
+            const videoW = canvas.width;
+            const videoH = canvas.height;
+
+            ctx.clearRect(0, 0, videoW, videoH);
+            ctx.fillStyle = '#222';
+            ctx.fillRect(0, 0, videoW, videoH);
+
+            if (overlayEnabledInput.checked) {
+                overlayRect = computeOverlayRect();
+                ctx.fillStyle = 'rgba(255,0,0,0.3)';
+                ctx.fillRect(overlayRect.left, overlayRect.top, overlayRect.w, overlayRect.h);
+                ctx.strokeStyle = 'rgba(255,0,0,0.9)';
+                ctx.lineWidth = 1.5;
+                ctx.strokeRect(overlayRect.left, overlayRect.top, overlayRect.w, overlayRect.h);
+            }
+
+            setActivePosButton();
+        }
+
+        function canvasPoint(event) {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                x: (event.clientX - rect.left) * (canvas.width / rect.width),
+                y: (event.clientY - rect.top) * (canvas.height / rect.height),
+            };
+        }
+
+        function pointInRect(p, r) {
+            return p.x >= r.left && p.x <= r.left + r.w && p.y >= r.top && p.y <= r.top + r.h;
+        }
+
+        function onCanvasDown(event) {
+            if (!overlayEnabledInput.checked) return;
+            const p = canvasPoint(event);
+            if (!pointInRect(p, overlayRect)) return;
+            dragging = true;
+            canvas.classList.add('dragging');
+            event.preventDefault();
+        }
+
+        function onCanvasMove(event) {
+            if (!dragging) return;
+            const p = canvasPoint(event);
+            const nx = Math.max(0, Math.min(1, p.x / canvas.width));
+            const ny = Math.max(0, Math.min(1, p.y / canvas.height));
+            overlayXInput.value = String(Math.round(nx * 1000) / 1000);
+            overlayYInput.value = String(Math.round(ny * 1000) / 1000);
+            drawPreview();
+        }
+
+        function onCanvasUp() {
+            dragging = false;
+            canvas.classList.remove('dragging');
+        }
+
+        function clearFreePos() {
+            overlayXInput.value = '';
+            overlayYInput.value = '';
+        }
+
+        function initOverlayControls() {
+            updateLabels();
+            drawPreview();
+
+            posGrid.addEventListener('click', (e) => {
+                const btn = e.target.closest('.overlay-pos-btn');
+                if (!btn) return;
+                clearFreePos(); // back to grid mode
+                posInput.value = btn.dataset.pos;
+                drawPreview();
+            });
+
+            marginInput.addEventListener('input', drawPreview);
+            scaleInput.addEventListener('input', () => { updateLabels(); drawPreview(); });
+            overlayEnabledInput.addEventListener('change', drawPreview);
+
+            canvas.addEventListener('mousedown', onCanvasDown);
+            canvas.addEventListener('mousemove', onCanvasMove);
+            window.addEventListener('mouseup', onCanvasUp);
+            canvas.addEventListener('mouseleave', onCanvasUp);
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initOverlayControls);
+        } else {
+            initOverlayControls();
+        }
+    </script>
+    <script>
+        document.getElementById('save-settings-btn').addEventListener('click', async (event) => {
+            const form = document.getElementById('generate-form');
+            const data = new FormData(form);
+            const overlayData = {
+                overlay_position: document.getElementById('overlay_position').value,
+                overlay_margin: document.getElementById('overlay_margin').value,
+                overlay_scale: document.getElementById('overlay_scale').value,
+                use_overlay_opencv: document.getElementById('use_overlay_opencv').checked ? '1' : '0',
+                overlay_enabled: document.getElementById('overlay_enabled').checked ? '1' : '0',
+                overlay_x: document.getElementById('overlay_x').value,
+                overlay_y: document.getElementById('overlay_y').value,
+            };
+            // Checkboxes absent from FormData when unchecked -- pin them to '0'
+            // so an explicit "off" persists instead of the server default.
+            const processingData = {
+                silence_cut: document.getElementById('silence_cut').checked ? '1' : '0',
+                blur_bars: document.getElementById('blur_bars').checked ? '1' : '0',
+                music_enabled: document.getElementById('music_enabled').checked ? '1' : '0',
+                music_file: document.getElementById('music_file').value,
+                music_volume: document.getElementById('music_volume').value,
+            };
+            const payload = {};
+            for (const [k, v] of data.entries()) payload[k] = v;
+            Object.assign(payload, overlayData, processingData);
+            const btn = event.target;
+            const original = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Сохранение…';
+            try {
+                const resp = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                if (window.showToast) window.showToast('Настройки сохранены', 'success');
+                btn.textContent = 'Сохранено';
+                setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1500);
+            } catch (e) {
+                if (window.showToast) window.showToast('Не удалось сохранить настройки', 'error');
+                btn.textContent = 'Ошибка';
+                setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1500);
+            }
+        });
+    </script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
