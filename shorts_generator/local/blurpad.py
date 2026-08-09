@@ -1,21 +1,17 @@
-"""Blur-padding to 9:16 vertical with blurred bars top/bottom.
+"""Blur-padding to 9:16 vertical: full frame over a dimmed blurred background.
 
-Instead of hard-cropping the frame to a tall 9:16 window, this renders:
-  * background: the video scaled to fill OUT_W x OUT_H (1080x1920), blurred
-    with gblur sigma=BLUR_SIGMA,
-  * foreground: the video scaled to FG_H (1344) tall keeping aspect, then
-    centre-cropped to OUT_W wide -- only the LEFT/RIGHT sides are cut
-    (nothing is taken off the top/bottom for sources at least as wide as
-    the output box),
-  * overlaid at y=BAR_H (288), i.e. 288 px blurred bar top + 288 px bottom.
+Classic blurred-background fit -- NOTHING is cropped:
 
-Geometry, all derived from BAR_PERCENT at import time:
-  OUT_W  = 1080                     -- output width
-  OUT_H  = 1920                     -- output height
-  BAR_PERCENT = 15                  -- each bar is 15% of OUT_H
-  BAR_H  = OUT_H * 15 / 100  = 288  -- one bar's height (top and bottom)
-  FG_H   = OUT_H * 70 / 100  = 1344 -- foreground strip height
-  BLUR_SIGMA = 20                   -- gblur sigma for the background
+  * background: the video scaled to cover OUT_W x OUT_H (1080x1920),
+    centre-cropped to the canvas size, dimmed (BLURPAD_DIM, default 0.15)
+    and heavily blurred (gblur sigma=BLURPAD_SIGMA, default 25) so the
+    soft backdrop never fights the sharp foreground;
+  * foreground: the WHOLE frame, scaled to fit inside the fg box with
+    force_original_aspect_ratio=decrease (16:9 source -> 1080x608), width/height
+    rounded down to even numbers (yuv420p rejects odd dims), optionally
+    pre-shrunk by BLURPAD_FG_SCALE percent (default 100, clamped 50..100);
+  * overlaid dead-centre: overlay=(W-w)/2:(H-h)/2, so the blur fills whatever
+    the foreground leaves (pillar/letterbox bars for any source aspect).
 
 Intended call point: inside crop_clip_local in shorts_generator/local/clipper.py,
 RIGHT AFTER `_reframe_vertical(cut_path, out_path, aspect_ratio)`:
@@ -32,17 +28,50 @@ local/clipper.py (clipper will import this module -- circular import otherwise),
 so it carries its own minimal ffmpeg runner.
 """
 import os
+import shutil
 import subprocess
 
 from ..config import env
 
-# --- Geometry constants (BAR_PERCENT is the single source of truth) ---------
-BAR_PERCENT = 15          # each blurred bar takes this % of the output height
 OUT_W = 1080              # output width
 OUT_H = 1920              # output height
-BAR_H = OUT_H * BAR_PERCENT // 100                  # 288 px per bar
-FG_H = OUT_H * (100 - 2 * BAR_PERCENT) // 100       # 1344 px foreground
-BLUR_SIGMA = 20           # gblur sigma for the background layer
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _fg_scale_percent() -> float:
+    """BLURPAD_FG_SCALE env: foreground pre-shrink, percent of the full box.
+
+    Read at use time (per-request overrides); clamp 50..100 so a fat-fingered
+    value can never produce a postage stamp or an overflow. Invalid -> 100.
+    """
+    try:
+        return _clamp(float(str(env("BLURPAD_FG_SCALE", "100") or "100").strip()), 50.0, 100.0)
+    except (TypeError, ValueError):
+        return 100.0
+
+
+def _blur_sigma() -> float:
+    """BLURPAD_SIGMA env: gblur sigma for the background layer. Invalid -> 25."""
+    try:
+        return float(str(env("BLURPAD_SIGMA", "25") or "25").strip())
+    except (TypeError, ValueError):
+        return 25.0
+
+
+def _dim_amount() -> float:
+    """BLURPAD_DIM env: background darkening 0..0.7 (eq brightness=-X before blur).
+
+    Default 0.15 -- a gentle dim so text/edges in the blurred copy do not
+    distract from the foreground. Clamped at 0.7: beyond that the backdrop
+    is essentially black and the blur stops being visible.
+    """
+    try:
+        return _clamp(float(str(env("BLURPAD_DIM", "0.15") or "0.15").strip()), 0.0, 0.7)
+    except (TypeError, ValueError):
+        return 0.15
 
 
 def blurpad_enabled_for(aspect_ratio: str) -> bool:
@@ -86,28 +115,31 @@ def _run_ffmpeg(cmd: list, log) -> None:
 
 
 def apply_blur_padding(in_path: str, out_path: str, log=print) -> str:
-    """Render in_path onto a blurred 1080x1920 canvas in one ffmpeg pass.
+    """Render in_path over a dimmed blurred copy of itself, 1080x1920, one pass.
 
-    Foreground: scaled to FG_H tall keeping aspect, centre-cropped to OUT_W
-    wide (sides only are cut for wide sources), overlaid at y=BAR_H so the
-    blurred background shows as 288 px bars top and bottom.
-    Audio is stream-copied when present, omitted otherwise.
-    Returns out_path.
+    Foreground: whole frame scaled to FIT the OUT_W x OUT_H box
+    (force_original_aspect_ratio=decrease -- no cropping anywhere), then
+    shrunk by BLURPAD_FG_SCALE percent; overlay is always centred, so any
+    source aspect gets symmetric blurred bars. Background: cover-scale +
+    centre-crop + eq brightness dim + gblur. Audio is stream-copied when
+    present, omitted otherwise. Returns out_path.
     """
+    scale_pct = _fg_scale_percent()
+    sigma = _blur_sigma()
+    dim = _dim_amount()
     log(f"[clip/local] blurpad: {in_path} -> {out_path} "
-        f"({OUT_W}x{OUT_H}, bars 2x{BAR_H}px, fg {OUT_W}x{FG_H}, blur {BLUR_SIGMA})")
-    # scale=OUT_W:FG_H:force_original_aspect_ratio=increase + crop is the
-    # variant that works for BOTH wide and narrow sources: it scales until the
-    # frame covers the OUT_W x FG_H box (width always >= OUT_W), so the centre
-    # crop never sees a frame narrower than OUT_W. The naive scale=-2:FG_H can
-    # yield width < 1080 for narrow sources and crop would error out.
+        f"({OUT_W}x{OUT_H}, fg fit {scale_pct:g}%, blur {sigma:g}, dim {dim:g})")
+    # fg box starts at the full canvas; the iw*P/ih*P scale then shrinks the
+    # fitted frame by P percent. Both dims pass through trunc(x/2)*2 -- odd
+    # widths/heights would abort the encode at the yuv420p pixel-format stage.
+    # overlay=(W-w)/2:(H-h)/2 centres whatever size the fg ends up at.
     filter_complex = (
         f"[0:v]split[a][b];"
         f"[a]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
-        f"crop={OUT_W}:{OUT_H},gblur=sigma={BLUR_SIGMA}[bg];"
-        f"[b]scale={OUT_W}:{FG_H}:force_original_aspect_ratio=increase,"
-        f"crop={OUT_W}:{FG_H}[fg];"
-        f"[bg][fg]overlay=(W-w)/2:{BAR_H}[v]"
+        f"crop={OUT_W}:{OUT_H},eq=brightness=-{dim:g},gblur=sigma={sigma:g}[bg];"
+        f"[b]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=decrease,"
+        f"scale=trunc(iw*{scale_pct:g}/100/2)*2:trunc(ih*{scale_pct:g}/100/2)*2[fg];"
+        f"[bg][fg]overlay=(W-w)/2:(H-h)/2[v]"
     )
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
@@ -131,4 +163,18 @@ def apply_blur_padding(in_path: str, out_path: str, log=print) -> str:
         log(f"[clip/local] blurpad: done, size={size} bytes -> {out_path}")
     except OSError:
         pass
+    return out_path
+
+
+def apply_blur_padding_for_ar(in_path: str, out_path: str, aspect_ratio: str, log=print) -> str:
+    """Aspect-aware wrapper used by the finalize stage: 9:16 gets the blur pass,
+    any other ratio is copied through unchanged.
+
+    Copied instead of re-rendered on purpose: a 1:1 draft already has the
+    right geometry, and a plain copy is lossless and instant.
+    """
+    if aspect_ratio == "9:16":
+        return apply_blur_padding(in_path, out_path, log=log)
+    log(f"[clip/local] blurpad: aspect {aspect_ratio} != 9:16, passthrough copy")
+    shutil.copy2(in_path, out_path)
     return out_path
