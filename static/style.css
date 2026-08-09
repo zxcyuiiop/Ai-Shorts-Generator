@@ -1111,3 +1111,37 @@ input[type="range"]::-moz-range-thumb {
         transform: rotate(360deg);
     }
 }
+
+/* ---------- Review panel: save flow (16:9 draft -> vertical on save) ---------- */
+.review-videowrap {
+    display: flex;
+    justify-content: center;
+}
+
+/* Apt after save: the clip was re-framed to the 9:16 target aspect. */
+.review-video-vertical {
+    max-width: 300px;
+    aspect-ratio: 9 / 16;
+}
+
+.review-hint {
+    margin-top: var(--space-3);
+    font-size: 0.82rem;
+    line-height: 1.4;
+    color: var(--text-muted);
+}
+
+.review-hint.review-hint-saved {
+    color: var(--success);
+}
+
+.saved-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--success);
+    border: 1px solid var(--success);
+    background: var(--success-bg, rgba(74, 222, 128, 0.12));
+}
