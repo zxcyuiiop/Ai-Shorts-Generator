@@ -663,6 +663,14 @@ def generate():
             "started_at": time.time(),
             "log": [],
             "aspect_ratio": aspect_ratio,
+            # Echo mode/llm_provider so /api/shorts/finalize can rebuild the
+            # same per-request overrides as the background run without having
+            # to guess them from settings.local.json. `params` already holds
+            # the GUI fields; storing them here lets the finalize endpoint
+            # re-apply exactly what the user saw on screen.
+            "mode": mode,
+            "llm_provider": llm_provider,
+            "_params": params,
         }
         progress_queues[job_id] = queue.Queue()
 
@@ -917,6 +925,128 @@ def job_shorts(job_id):
     return jsonify({"shorts": shorts})
 
 
+# Temp leftovers written next to the draft by the save flow / finalize.
+# Swept once the final clip lands in output/saved/ so a crash never litters.
+_SAVE_LEFTOVER_SUFFIXES = (".tmp_save.mp4", ".prerender.mp4", ".overlay.mp4",
+                           ".music.mp4", ".silent.mp4")
+_FINALIZE_LEFTOVER_SUFFIXES = (".prerender.mp4", ".overlay.mp4", ".music.mp4")
+
+
+@app.route("/api/shorts/save", methods=["POST"])
+def save_short():
+    """Approve a draft: reframe + effects, then move to output/saved/.
+
+    Drafts are rendered horizontally (16:9, no crop) so nothing is lost before
+    review. This reframes the draft to the job's target aspect with face
+    tracking (``_reframe_vertical``) into a temp sibling, runs
+    ``finalize_clip_local`` (blur bars / overlay / music) on it, moves the
+    finished clip to ``output/saved/<same subfolder>/``, and deletes the draft.
+    Effects run under the producing job's settings snapshot (``_params``), not
+    the current settings file.
+
+    On any failure the draft is left untouched so the user can retry.
+    """
+    from shorts_generator.config import clear_overrides, set_overrides
+    from shorts_generator.local.clipper import _reframe_vertical, finalize_clip_local
+
+    data = request.get_json(silent=True) or request.form.to_dict() or {}
+    abs_path, safe_rel = _url_to_output_path((data.get("url") or "").strip())
+    if abs_path is None:
+        return jsonify({"error": "url must be an /output/... path"}), 400
+    if safe_rel == "saved" or safe_rel.startswith("saved/"):
+        return jsonify({"error": "clip is already in saved/"}), 400
+    if not os.path.isfile(abs_path):
+        return jsonify({"error": "File not found"}), 404
+
+    output_dir = os.path.realpath(LOCAL_OUTPUT_DIR)
+    job = None
+    draft_target = ""
+    with jobs_lock:
+        snapshot = [dict(j) for j in jobs.values()]
+    for _job in snapshot:
+        if abs_path in _job_short_files(_job, output_dir):
+            job = _job
+            for short in (_job.get("result") or {}).get("shorts") or []:
+                draft_target = (short.get("target_aspect") or "").strip()
+                if draft_target:
+                    break
+            break
+    requested = (data.get("aspect_ratio") or "").strip()
+    aspect = requested or ((job or {}).get("aspect_ratio") or "").strip() \
+        or draft_target or "9:16"
+
+    p = (job or {}).get("_params") or {}
+    overrides = _overrides_from(
+        (job or {}).get("mode") or p.get("mode") or "local",
+        p.get("api_keys") or {},
+        p.get("whisper_device"), p.get("whisper_model"),
+        p.get("overlay_position"), p.get("overlay_margin"), p.get("overlay_scale"),
+        p.get("use_overlay_opencv"), p.get("overlay_vertical_pos"),
+        p.get("overlay_margin_bottom"), p.get("overlay_margin_left"),
+        p.get("overlay_enabled"), p.get("overlay_x"), p.get("overlay_y"),
+        p.get("music_enabled"), p.get("music_file"), p.get("music_volume"),
+        p.get("silence_cut"), p.get("blur_bars"),
+    )
+
+    # Work on a temp sibling, never on the draft itself.
+    tmp = abs_path + ".tmp_save.mp4"
+    draft_backup = abs_path + ".draft.mp4"
+    leftover = [abs_path + s for s in _SAVE_LEFTOVER_SUFFIXES]
+
+    set_overrides(overrides)
+    try:
+        _reframe_vertical(abs_path, tmp, aspect)
+        finalize_clip_local(tmp, aspect)
+    except Exception as e:
+        for path in leftover:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass
+        return jsonify({"error": f"save failed: {e}"}), 500
+    finally:
+        clear_overrides()
+
+    saved_dir = os.path.join(output_dir, "saved", os.path.dirname(safe_rel))
+    try:
+        os.makedirs(saved_dir, exist_ok=True)
+    except OSError as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return jsonify({"error": f"could not create saved dir: {e}"}), 500
+    final_path = os.path.join(saved_dir, os.path.basename(abs_path))
+    final_part = final_path + ".part"
+
+    try:
+        shutil.move(tmp, final_part)
+        os.replace(final_part, final_path)
+        os.remove(abs_path)
+    except OSError as e:
+        try:
+            if not os.path.isfile(final_path) and not os.path.isfile(abs_path):
+                if os.path.isfile(final_part):
+                    shutil.move(final_part, abs_path)
+                elif os.path.isfile(tmp):
+                    shutil.move(tmp, abs_path)
+        except OSError:
+            pass
+        return jsonify({"error": f"could not move into saved/: {e}"}), 500
+
+    for path in leftover + [draft_backup, final_part]:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+    rel = os.path.relpath(os.path.realpath(final_path), output_dir).replace("\\", "/")
+    return jsonify({"ok": True, "url": f"/output/{rel}", "saved": True,
+                    "aspect_ratio": aspect})
+
+
 @app.route("/api/shorts/delete", methods=["POST"])
 def delete_short():
     data = request.get_json(silent=True) or request.form.to_dict() or {}
@@ -997,6 +1127,7 @@ def finalize_short():
     panel. The draft is replaced in place (a ``.draft.mp4`` backup is kept so
     the operation is never destructive on failure).
     """
+    from shorts_generator.config import clear_overrides, set_overrides
     from shorts_generator.local.clipper import finalize_clip_local
 
     data = request.get_json(silent=True) or request.form.to_dict() or {}
@@ -1007,17 +1138,50 @@ def finalize_short():
         return jsonify({"error": "File not found"}), 404
 
     # aspect_ratio: explicit in the request, else the job that produced the clip.
+    # We capture that job here and reuse it both for aspect_ratio and for the
+    # per-request override snapshot below.
+    job = None
     aspect_ratio = (data.get("aspect_ratio") or "").strip()
     if not aspect_ratio:
         with jobs_lock:
             snapshot = [dict(j) for j in jobs.values()]
         output_dir = os.path.realpath(LOCAL_OUTPUT_DIR)
-        for job in snapshot:
-            if abs_path in _job_short_files(job, output_dir):
-                aspect_ratio = (job.get("aspect_ratio") or "").strip()
+        for _job in snapshot:
+            if abs_path in _job_short_files(_job, output_dir):
+                aspect_ratio = (_job.get("aspect_ratio") or "").strip()
+                job = _job
                 if aspect_ratio:
                     break
+    else:
+        # Explicit aspect_ratio still benefits from the job's params when the
+        # caller didn't pass one; only scan if we actually need to.
+        with jobs_lock:
+            snapshot = [dict(j) for j in jobs.values()]
+        output_dir = os.path.realpath(LOCAL_OUTPUT_DIR)
+        for _job in snapshot:
+            if abs_path in _job_short_files(_job, output_dir):
+                job = _job
+                break
     aspect_ratio = aspect_ratio or "9:16"
+
+    # Per-request overrides the browser submitted for this job. finalize runs
+    # in a fresh thread, so without this the watermark toggle set on the review
+    # panel is lost and the clip re-acquires its effects from the persisted
+    # settings file instead of the user's GUI state. If no job is found we
+    # fall back to the persisted lowercase settings keys (which the
+    # settings-aliases fix makes visible to config.env too).
+    p = (job or {}).get("_params") or {}
+    overrides = _overrides_from(
+        (job or {}).get("mode") or p.get("mode") or "local",
+        p.get("api_keys") or {},
+        p.get("whisper_device"), p.get("whisper_model"),
+        p.get("overlay_position"), p.get("overlay_margin"), p.get("overlay_scale"),
+        p.get("use_overlay_opencv"), p.get("overlay_vertical_pos"),
+        p.get("overlay_margin_bottom"), p.get("overlay_margin_left"),
+        p.get("overlay_enabled"), p.get("overlay_x"), p.get("overlay_y"),
+        p.get("music_enabled"), p.get("music_file"), p.get("music_volume"),
+        p.get("silence_cut"), p.get("blur_bars"),
+    )
 
     # Backup so a mid-crash can't lose the approved-but-not-yet-deleted draft.
     backup = abs_path + ".draft.mp4"

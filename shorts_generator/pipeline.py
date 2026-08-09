@@ -55,13 +55,18 @@ def _run_local(
     from .config import LOCAL_OUTPUT_DIR
     subfolder = (get_last_download_info().get("folder") or "").strip() or "video"
     shorts_dir = os.path.join(LOCAL_OUTPUT_DIR, subfolder)
-    # Drafts only: no effects at render time. finalize_clip_local applies
-    # blur-bars/overlay/music later, after the user approves a short in the
-    # review panel (POST /api/shorts/finalize). Saves GPU on rejected clips.
+    # Drafts only, in the SOURCE's horizontal framing (16:9), no target-aspect
+    # reframe at render time: the vertical crop is destructive, so it happens
+    # on save (POST /api/shorts/save -> _reframe_vertical with face tracking ->
+    # finalize_clip_local for blur/overlay/music), after the user approves a
+    # short in the review panel. Saves GPU on rejected clips.
     shorts = crop_highlights_local(
-        source_path, top, aspect_ratio=aspect_ratio, output_dir=shorts_dir,
+        source_path, top, aspect_ratio="16:9", output_dir=shorts_dir,
         finalize=False,
     )
+    for short in shorts:
+        short["draft_aspect"] = "16:9"          # what the draft was rendered at
+        short["target_aspect"] = aspect_ratio   # what save will reframe it to
 
     return {
         "mode": "local",
