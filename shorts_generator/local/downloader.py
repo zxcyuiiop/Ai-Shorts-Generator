@@ -344,6 +344,9 @@ def download_youtube_local(video_url: str, fmt: str = "720", out_dir: Optional[s
         "retries": 5,
         "fragment_retries": 5,
         "extractor_retries": 3,
+        # Ignore cached info_json: a degraded YouTube response can cache
+        # id='recommended' ext=None and poison subsequent runs.
+        "cachedir": False,
     }
 
     # Snapshot of files in out_dir BEFORE the download so we can detect any new
