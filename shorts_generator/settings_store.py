@@ -29,7 +29,28 @@ SECRET_FIELDS = {
 
 # Everything the GUI is allowed to persist. Anything else in the payload is
 # dropped, so a stray field in a request can't write arbitrary junk to disk.
-ALLOWED_FIELDS = SECRET_FIELDS | {
+#
+# Canonical lower-case key -> uppercase env alias(es). config.env() looks up
+# settings.local.json by the UPPERCASE name (e.g. OVERLAY_ENABLED), while the
+# GUI persists lower-case field names -- so without these aliases the file is
+# never consulted, and a thread without per-request overrides (e.g. the
+# finalize endpoint) falls through to defaults and re-applies the watermark.
+# Checkbox booleans are normalized to "1"/"0" (see _alias_value): the env
+# readers treat on/off and true/false inconsistently, but "1"/"0" off code is
+# read the same way by blurpad/music.py, clipper, and config.env.
+GUI_ENV_ALIASES = {
+    "overlay_enabled": ("OVERLAY_ENABLED",),
+    "blur_bars": ("BLUR_BARS",),
+    "music_enabled": ("MUSIC_ENABLED",),
+    "music_file": ("MUSIC_FILE",),
+    "music_volume": ("MUSIC_VOLUME",),
+    "silence_cut": ("SILENCE_CUT",),
+}
+
+# Aliases are part of the persisted file, so they must survive load()'s filter
+# too -- otherwise a save followed by a reload would silently drop them and the
+# whole fix is lost. The GUI whitelist still guards the raw request payload.
+ALLOWED_FIELDS = SECRET_FIELDS | {alias for names in GUI_ENV_ALIASES.values() for alias in names} | {
     "url",
     "source_type",
     "mode",
@@ -72,6 +93,23 @@ MASK = "••••••••"
 _lock = threading.Lock()
 
 
+def _alias_value(field: str, value):
+    """Normalize a GUI checkbox/toggle value to the "1"/"0" env string.
+
+    The GUI sends real booleans (or "true"/"on"/"1" ...), but every consumer
+    reads the value via config.env() as a plain string. "1"/"0" is the only
+    pair every off/on check in the codebase treats unambiguously (on/off are
+    interpreted inconsistently across readers), so that's what's persisted.
+
+    Only genuine booleans get normalized; music_file (a path string) and
+    music_volume (a number) are passed through unchanged so ``config.env``
+    doesn't mangle them.
+    """
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    return str(value) if not isinstance(value, str) else value
+
+
 def load() -> Dict:
     """Read settings from disk. Returns {} if absent or corrupt."""
     try:
@@ -98,6 +136,18 @@ def save(incoming: Dict) -> Dict:
             if key in SECRET_FIELDS and value == MASK:
                 continue  # masked placeholder: leave the stored key alone
             current[key] = value
+
+        # Persist uppercase env aliases alongside the lowercase GUI field names,
+        # recomputed from the MERGED dict so a partial settings save can't drift
+        # out of sync with what the file remembers. config.env() reads the file
+        # by the UPPERCASE name, so these aliases are what makes the file visible
+        # to config.env() consumers running outside a request-override thread.
+        for field, names in GUI_ENV_ALIASES.items():
+            if field not in current:
+                continue
+            alias = _alias_value(field, current[field])
+            for name in names:
+                current[name] = alias
 
         tmp = SETTINGS_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:

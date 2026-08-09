@@ -1118,6 +1118,45 @@ def trim_short():
     })
 
 
+@app.route("/api/shorts/thumbnail", methods=["POST"])
+def thumbnail_short():
+    """Generate a cover JPEG for a short (see local/thumbgen.py for the design).
+
+    Request: {url: "/output/...", title?: text overlay, at_percent?: 1..90}.
+    Response: {ok: true, url: "/output/.../name_thumb[_N].jpg"} — the frame is
+    written next to the clip and served through the same /output/ route.
+    Import is lazy and LOCAL_OUTPUT_DIR is read at request time so tests can
+    redirect both after importing this module.
+    """
+    from shorts_generator.local.thumbgen import make_thumbnail
+
+    data = request.get_json(silent=True) or request.form.to_dict() or {}
+    abs_path, _safe_rel = _url_to_output_path((data.get("url") or "").strip())
+    if abs_path is None:
+        return jsonify({"error": "url must be an /output/... path"}), 400
+    if not os.path.isfile(abs_path):
+        return jsonify({"error": "File not found"}), 404
+
+    if not shutil.which("ffmpeg"):
+        return jsonify({"error": "ffmpeg not found on PATH"}), 503
+
+    title = data.get("title")
+    if title is not None and not isinstance(title, str):
+        title = str(title)
+    at_percent = data.get("at_percent")
+
+    try:
+        out_path = make_thumbnail(abs_path, title=title, at_percent=at_percent)
+    except ValueError as e:  # bad at_percent etc.
+        return jsonify({"error": str(e)}), 400
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
+
+    output_dir = os.path.realpath(LOCAL_OUTPUT_DIR)
+    rel = os.path.relpath(os.path.realpath(out_path), output_dir).replace("\\", "/")
+    return jsonify({"ok": True, "url": f"/output/{rel}"})
+
+
 @app.route("/api/shorts/finalize", methods=["POST"])
 def finalize_short():
     """Apply the visual effects (blur bars / TikTok overlay / music) to a draft.
@@ -1190,6 +1229,7 @@ def finalize_short():
     except OSError as e:
         return jsonify({"error": f"could not back up draft: {e}"}), 500
     try:
+        set_overrides(overrides)
         finalize_clip_local(abs_path, aspect_ratio)
     except Exception as e:  # restore the draft on any effect failure
         try:
@@ -1197,6 +1237,8 @@ def finalize_short():
         except OSError:
             pass
         return jsonify({"error": f"finalize failed: {e}"}), 500
+    finally:
+        clear_overrides()
 
     output_dir = os.path.realpath(LOCAL_OUTPUT_DIR)
     rel = os.path.relpath(os.path.realpath(abs_path), output_dir).replace("\\", "/")
