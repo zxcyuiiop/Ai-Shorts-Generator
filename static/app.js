@@ -502,7 +502,14 @@ function renderReview() {
     deleteBtn.className = 'btn-secondary btn-danger';
     deleteBtn.textContent = 'Удалить';
 
-    actions.append(previewBtn, saveBtn, trimBtn, deleteBtn);
+    // Cover is generated on demand only — a frame grab per card unconditionally
+    // would cost the user ffmpeg runs on clips they might reject anyway.
+    const thumbBtn = document.createElement('button');
+    thumbBtn.type = 'button';
+    thumbBtn.className = 'btn-secondary';
+    thumbBtn.textContent = '🖼 Обложка';
+
+    actions.append(previewBtn, saveBtn, trimBtn, deleteBtn, thumbBtn);
 
     saveBtn.addEventListener('click', async () => {
         saveBtn.disabled = true;
@@ -563,6 +570,45 @@ function renderReview() {
     });
 
     reviewBody.append(meta, videoWrap, actions, hint, trim.wrap);
+
+    const thumbWrap = document.createElement('div');
+    thumbWrap.className = 'review-thumbnail hidden';
+
+    thumbBtn.addEventListener('click', async () => {
+        thumbBtn.disabled = true;
+        const originalText = thumbBtn.textContent;
+        thumbBtn.innerHTML = '<span class="btn-spinner"></span> Делаю...';
+        try {
+            const resp = await fetch('/api/shorts/thumbnail', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: short.url, title: short.name }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || !data.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+            thumbWrap.innerHTML = '';
+            const img = document.createElement('img');
+            img.className = 'review-thumbnail-img';
+            img.alt = 'Обложка';
+            img.src = `${data.url}${data.url.includes('?') ? '&' : '?'}t=${Date.now()}`;
+            const link = document.createElement('a');
+            link.className = 'review-thumbnail-link';
+            link.href = data.url;
+            link.download = '';
+            link.textContent = '⬇ Скачать обложку';
+            thumbWrap.append(img, link);
+            thumbWrap.classList.remove('hidden');
+            showToast('Обложка готова', 'success');
+            thumbBtn.textContent = originalText;
+        } catch (e) {
+            showToast(e.message || 'Не удалось создать обложку', 'error');
+            thumbBtn.textContent = originalText;
+        } finally {
+            thumbBtn.disabled = false;
+        }
+    });
+
+    reviewBody.append(thumbWrap);
 }
 
 function buildTrimForm(short, video) {
