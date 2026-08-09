@@ -9,9 +9,16 @@ Covers:
     bg -- eq=brightness=--0.5 is invalid ffmpeg, so it must clamp to 0)
   - blurpad_enabled_for() master-switch matrix (unchanged behavior)
   - apply_blur_padding_for_ar(): 9:16 -> blur pass, other ratios -> copy2
+  - request-level overrides: set_overrides({"BLUR_BARS": "0"}) must DROP the
+    blur pass in finalize_clip_local even while settings.local.json says 1
+    (this is the regression that shipped: set_overrides used to discard falsy
+    values, so env() fell through to the persisted settings file)
+  - E2E (only when ffmpeg+PIL are available): render a real 1080x1920 clip
+    and check the top/bottom ~25% bands are non-black and visibly blurrier
+    than the centre (Laplacian-variance heuristic).
 
-Everything is stubbed: subprocess.run (ffprobe probe + ffmpeg render) and
-os.path.getsize are replaced -- no real ffmpeg, no real video.
+The stubbed part replaces subprocess.run (ffprobe probe + ffmpeg render) and
+os.path.getsize -- no real ffmpeg, no real video there.
 """
 import os
 import shutil
@@ -47,6 +54,10 @@ class FakeProc:
         self.returncode = returncode
 
 
+class SkipTest(Exception):
+    """Optional dependency missing -- the caller reports a SKIP line."""
+
+
 def capture_filter(has_audio=True):
     """Run apply_blur_padding with stubbed subprocess/getsize; return (filter, cmd)."""
     calls = []
@@ -73,6 +84,75 @@ ENV_KEYS = ("BLURPAD_FG_SCALE", "BLURPAD_SIGMA", "BLURPAD_DIM", "BLUR_BARS")
 def clear_env():
     for k in ENV_KEYS:
         os.environ.pop(k, None)
+
+
+def e2e_blur_bands(tmp):
+    """Real ffmpeg render: 640x360 source -> 1080x1920 with blurred bands.
+
+    Verifies the bars the user actually sees: the output is 1080x1920, the
+    top/bottom ~25% bands are not black (the dim never crushes them), and they
+    are visibly blurrier than the sharp foreground centre.
+    """
+    try:
+        from PIL import Image, ImageFilter
+    except ImportError:
+        raise SkipTest("PIL not installed")
+    import subprocess
+
+    src = os.path.join(tmp, "src_e2e.mp4")
+    out = os.path.join(tmp, "out_e2e.mp4")
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error",
+         "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24",
+         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+         "-t", "3", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-c:a", "aac", src],
+        check=True, timeout=120)
+
+    clear_env()  # defaults: fg 100%, sigma 18, dim 0.06
+    bp.apply_blur_padding(src, out, log=lambda s: None)
+
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "csv=p=0", out],
+        capture_output=True, text=True, timeout=30)
+    check("e2e: output is 1080x1920", probe.stdout.strip() == "1080,1920",
+          probe.stdout.strip())
+
+    frame = os.path.join(tmp, "frame_e2e.png")
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error",
+         "-ss", "1.0", "-i", out, "-frames:v", "1", frame],
+        check=True, timeout=60)
+    img = Image.open(frame).convert("L")
+    check("e2e: frame decodes at 1080x1920", img.size == (1080, 1920), str(img.size))
+    w, h = img.size
+    band = int(h * 0.25)
+    top = img.crop((0, 0, w, band))
+    bottom = img.crop((0, h - band, w, h))
+    center = img.crop((int(w * 0.2), int(h * 0.45), int(w * 0.8), int(h * 0.55)))
+
+    def stats(region):
+        px = list(region.getdata())
+        mean = sum(px) / len(px)
+        # Laplacian-variance sharpness: blur the region, then measure how much
+        # the 3x3 sharpening kernel still changes it (PIL has no raw Laplacian;
+        # FIND_EDGES responds the same way -- soft blur -> weak response).
+        edges = region.filter(ImageFilter.FIND_EDGES)
+        epx = list(edges.getdata())
+        emean = sum(epx) / len(epx)
+        var = sum((v - emean) ** 2 for v in epx) / len(epx)
+        return mean, var
+
+    top_mean, top_sharp = stats(top)
+    bot_mean, bot_sharp = stats(bottom)
+    ctr_mean, ctr_sharp = stats(center)
+    detail = (f"top(mean={top_mean:.0f},sharp={top_sharp:.0f}) "
+              f"bottom(mean={bot_mean:.0f},sharp={bot_sharp:.0f}) "
+              f"centre(mean={ctr_mean:.0f},sharp={ctr_sharp:.0f})")
+    check("e2e: top band not black (mean > 8)", top_mean > 8, detail)
+    check("e2e: bottom band not black (mean > 8)", bot_mean > 8, detail)
+    check("e2e: bands blurrier than centre",
+          top_sharp < ctr_sharp * 0.5 and bot_sharp < ctr_sharp * 0.5, detail)
 
 
 def main():
@@ -175,6 +255,67 @@ def main():
                       r == dst and copied == b"\x00\x00\x00\x18ftypmp42", f"bytes={copied!r}")
         finally:
             bp.subprocess.run = real_run
+
+        # --- request overrides must gate the blur pass -------------------------
+        # The save/finalize endpoints rebuild the job's GUI params and call
+        # config.set_overrides() before finalize_clip_local. Regression: the old
+        # set_overrides dropped falsy values, so blur_bars="0" from the request
+        # never reached env() and the persisted settings file won instead.
+        from shorts_generator.config import clear_overrides, set_overrides
+        from shorts_generator.local import clipper as _clip
+
+        draft = os.path.join(tmp, "draft.mp4")
+        with open(draft, "wb") as f:
+            f.write(b"draft")
+        enabled_calls = []
+
+        def fake_apply(in_path, out_path, log=print):
+            enabled_calls.append((in_path, out_path))
+            with open(out_path, "wb") as f:
+                f.write(b"blurred")
+            return out_path
+
+        real_apply, real_captions = bp.apply_blur_padding, _clip.captions_enabled
+        try:
+            _clip.apply_blur_padding = fake_apply
+            _clip.captions_enabled = lambda: False
+            # settings layer is the empty scratch file (redirected above) and
+            # BLUR_BARS is unset -> the builtin default '1' must switch blur ON.
+            # OVERLAY_ENABLED=0 keeps the TikTok stage from opening our fake mp4.
+            set_overrides({"OVERLAY_ENABLED": "0"})
+            try:
+                _clip.finalize_clip_local(draft, "9:16")
+            finally:
+                clear_overrides()
+            check("finalize: default '1' (no blur override) runs the blur pass",
+                  enabled_calls and enabled_calls[0][0].endswith(".prerender.mp4")
+                  and enabled_calls[0][1] == draft,
+                  f"calls={enabled_calls}")
+            with open(draft, "rb") as f:
+                check("finalize: blur output swapped back onto the draft path",
+                      f.read() == b"blurred")
+            check("finalize: prerender temp cleaned up",
+                  not os.path.exists(draft + ".prerender.mp4"))
+
+            enabled_calls.clear()
+            # user unchecked the box in the GUI (+ overlay still off)
+            set_overrides({"BLUR_BARS": "0", "OVERLAY_ENABLED": "0"})
+            try:
+                _clip.finalize_clip_local(draft, "9:16")
+            finally:
+                clear_overrides()
+            check("finalize: override BLUR_BARS=0 skips the blur pass",
+                  not enabled_calls, f"calls={enabled_calls}")
+        finally:
+            _clip.apply_blur_padding = real_apply
+            _clip.captions_enabled = real_captions
+
+        # --- E2E: real ffmpeg render -> 1080x1920, non-black blurred bands ----
+        if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+            try:
+                e2e_blur_bands(tmp)
+            except SkipTest as e:
+                print(f"SKIP  real-render checks - {e}")
     finally:
         clear_env()
         shutil.rmtree(tmp, ignore_errors=True)

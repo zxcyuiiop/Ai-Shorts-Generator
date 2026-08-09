@@ -14,8 +14,17 @@ _overrides = threading.local()
 
 
 def set_overrides(mapping: dict) -> None:
-    """Bind settings for the current thread only. Falsy values are ignored."""
-    _overrides.values = {k: v for k, v in (mapping or {}).items() if v}
+    """Bind settings for the current thread only. Present-but-falsy values are kept.
+
+    The old `if v` filter dropped explicit falsy values (BLUR_BARS "0",
+    OVERLAY_ENABLED "0"), which meant env() fell through to settings.local.json
+    or the builtins default instead of honoring the caller's explicit choice.
+    Only None and "" are dropped ("no value supplied"); "0"/False/0 are real
+    choices -- env() reads them and already interprets "0"/"false"/"no".
+    """
+    _overrides.values = {
+        k: v for k, v in (mapping or {}).items() if v is not None and v != ""
+    }
 
 
 def clear_overrides() -> None:
@@ -33,10 +42,8 @@ def env(name: str, default: str = "") -> str:
     must beat the clipper's default of "1", not fall through to it.
     """
     values = getattr(_overrides, "values", None)
-    if values and values.get(name):
-        return values[name]
-    if values and name in values:
-        return values[name]  # explicit falsy override (e.g. OVERLAY_ENABLED "0")
+    if values is not None and name in values:
+        return values[name]  # overrides win even when falsy (e.g. BLUR_BARS "0")
     # Check settings persisted by the GUI
     try:
         settings = load_settings()
