@@ -1,16 +1,12 @@
 # -*- coding: utf-8 -*-
 """Run every root ``test_*.py`` suite in a fresh subprocess.
 
-Discovery is fully automatic: every ``test_*.py`` file in the repository root
+Discovery is automatic: every ``test_*.py`` file in the repository root
 (except this runner itself) is executed with the current Python interpreter,
-one file per subprocess, so each suite gets a clean import state. Suites that
-cover other branches (their test files land alongside this runner on their own
-branches) are listed in ``SELF_TEST_EXCLUDE`` — they are discovered and
-reported but skipped, so this file never conflicts at merge time on lists of
-its own tests. Results are reported per file followed by a total summary; the
-exit code is non-zero if any test file fails. Supports short summary via the
-``--short`` flag and a per-file timeout via the ``TEST_TIMEOUT`` env var
-(default 300s).
+one file per subprocess, so each suite gets a clean import state. Results are
+reported per file followed by a total summary; the exit code is non-zero if
+any test file fails or times out. The per-file timeout can be overridden with
+the ``TEST_TIMEOUT`` environment variable (default 300 seconds).
 """
 import glob
 import os
@@ -19,25 +15,12 @@ import sys
 
 _CHECK = "[check]"
 
-# Test suites owned by other feature branches; discovered but skipped here so
-# this file never carries a conflicting list of its own tests at merge time.
-SELF_TEST_EXCLUDE = {
-    "test_blurpad.py",
-    "test_captions.py",
-    "test_downloader_selector.py",
-    "test_ffmpeg_ops.py",
-    "test_frameops.py",
-    "test_highlights.py",
-    "test_thumbgen.py",
-    "test_transcriber.py",
-}
-
 
 def run_test(path, timeout=300):
     """Run a single test file in a subprocess.
 
-    Returns (status, returncode, output) where status is one of
-    "PASS", "SKIP", "TIMEOUT" or "FAIL".
+    Returns ``(status, returncode, output)`` where *status* is one of
+    ``"PASS"``, ``"SKIP"``, ``"TIMEOUT"`` or ``"FAIL"``.
     """
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
@@ -58,9 +41,13 @@ def run_test(path, timeout=300):
     out = (res.stdout or "") + (res.stderr or "")
     if res.returncode != 0:
         return "FAIL", res.returncode, out
-    # Convention: suites print a SKIP note when optional deps are missing.
-    if "SKIP" in out:
-        return "SKIP", res.returncode, out
+    # Convention: suites print a line starting with "SKIP" (e.g. "SKIP: ffmpeg
+    # not installed") when optional deps are missing. Match such a line rather
+    # than the bare substring, so prose like "skipped gracefully" in a passing
+    # check name is not misread as a skip.
+    for line in out.splitlines():
+        if line.lstrip().startswith("SKIP"):
+            return "SKIP", res.returncode, out
     return "PASS", res.returncode, out
 
 
@@ -80,26 +67,23 @@ def main():
     results = []
     for path in tests:
         name = os.path.basename(path)
-        if name in SELF_TEST_EXCLUDE:
-            print(f"{_CHECK} SKIP {name}: other task coverage (excluded)", flush=True)
-            results.append((name, "SKIP", 0.0))
-            continue
         print(f"{_CHECK} RUN  {name} ...", flush=True)
         status, rc, out = run_test(path, timeout=timeout)
         tail = ""
-        if not short:
-            tail = (out or "").strip().splitlines()
-            tail = tail[-1] if tail else ""
-        elif status != "PASS" and out:
-            lines = [ln for ln in out.strip().splitlines() if "FAIL" in ln or "SKIP" in ln]
-            tail = lines[0] if lines else out.strip().splitlines()[-1]
-        results.append((name, status, rc))
+        if out:
+            lines = [ln for ln in out.strip().splitlines() if ln.strip()]
+            if not short:
+                tail = lines[-1] if lines else ""
+            elif status != "PASS":
+                markers = [ln for ln in lines if "FAIL" in ln or "SKIP" in ln]
+                tail = markers[0] if markers else lines[-1]
+        results.append((name, status))
         print(f"{_CHECK} {status} {name}" + (f" | {tail}" if tail else ""), flush=True)
     counts = {"PASS": 0, "FAIL": 0, "SKIP": 0, "TIMEOUT": 0}
-    for _, status, _ in results:
+    for _, status in results:
         counts[status] = counts.get(status, 0) + 1
     print(f"{_CHECK} Summary: {len(results)} file(s)")
-    for name, status, rc in results:
+    for name, status in results:
         print(f"  {status:7s} {name}")
     print(
         f"{_CHECK} PASS={counts['PASS']} FAIL={counts['FAIL']} "
