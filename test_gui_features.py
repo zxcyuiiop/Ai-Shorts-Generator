@@ -40,6 +40,19 @@ def check(name, cond, detail=""):
         failures.append(name)
 
 
+def webapp_check_js(source):
+    """True when node exists and accepts the script (``node --check``)."""
+    import subprocess
+    try:
+        proc = subprocess.run(["node", "--check", "-"], input=source,
+                              capture_output=True, text=True, timeout=30)
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return None  # node not installed -- nothing to assert on
+    if proc.returncode != 0:
+        print(proc.stderr.strip()[:300])
+    return proc.returncode == 0
+
+
 def fake_pipeline(**kwargs):
     """Stand-in for generate_shorts that prints the markers the GUI parses.
 
@@ -80,6 +93,30 @@ def main():
     c = webapp.app.test_client()
 
     try:
+        # --- template/JS contract: every id app.js touches must exist once ---
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent
+
+        check("index page renders", c.get("/").status_code == 200)
+        r = c.get("/static/app.js")
+        check("app.js served", r.status_code == 200, str(r.status_code))
+        app_js = r.get_data(as_text=True)
+        check("app.js parses under node", webapp_check_js(app_js) is not False)
+
+        html = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        html_ids = re.findall(r'id="([^"]+)"', html)
+        dupes = sorted({i for i in html_ids if html_ids.count(i) > 1})
+        check("no duplicate ids in template", not dupes, ", ".join(dupes))
+        js_ids = sorted(set(re.findall(r"getElementById\('([^']+)'\)", app_js)))
+        missing = [i for i in js_ids if i not in html_ids]
+        # A missing id throws at the wiring block and takes every listener after
+        # it down with it -- that is how the music upload button went dead.
+        check("app.js ids exist in template", not missing, ", ".join(missing))
+        check("music upload wiring present",
+              "music_upload_btn" in js_ids and "/api/upload/music" in app_js)
+
         # --- settings round-trip ---
         check("GET /api/settings empty at first", c.get("/api/settings").get_json() == {})
 
@@ -110,6 +147,25 @@ def main():
               settings_store.resolve_secret("nim_key", MASK) == "nvapi-real-secret")
         check("real value passes through",
               settings_store.resolve_secret("nim_key", "nvapi-new") == "nvapi-new")
+
+        # --- music upload: the GUI sends the audio under the "music" field ---
+        wav = io.BytesIO(b"RIFF" + b"\x00" * 40)
+        r = c.post("/api/upload/music", data={"music": (wav, "song.wav")},
+                   content_type="multipart/form-data")
+        body = r.get_json() or {}
+        check("music upload ok", r.status_code == 200 and body.get("ok") is True,
+              f"{r.status_code} {body}")
+        check("music saved under music/",
+              body.get("path", "").replace("\\", "/").endswith("music/" + body.get("filename", "\x00"))
+              and body.get("filename", "").startswith("music_")
+              and os.path.isfile(body.get("path", "")), str(body.get("path")))
+
+        r = c.post("/api/upload/music", data={"music": (io.BytesIO(b"x"), "song.exe")},
+                   content_type="multipart/form-data")
+        check("music upload rejects bad extension", r.status_code == 400)
+
+        r = c.post("/api/upload/music", data={}, content_type="multipart/form-data")
+        check("music upload rejects missing file", r.status_code == 400)
 
         # --- generation: log streaming + timer ---
         r = c.post("/api/generate", json={

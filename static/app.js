@@ -174,11 +174,7 @@ async function restoreSettings() {
     for (const field of SETTING_FIELDS) {
         const el = document.getElementById(field);
         if (!el || saved[field] === undefined || saved[field] === '') continue;
-        if (el.type === 'checkbox') {
-            el.checked = saved[field] === true || saved[field] === 'true' || saved[field] === '1' || saved[field] === 1;
-        } else {
-            el.value = saved[field];
-        }
+        applyFieldValue(el, saved[field]);
     }
     applyOverlaySettings(saved);
     updateMusicVolumeLabel();
@@ -186,6 +182,19 @@ async function restoreSettings() {
     if (saved.url && !queueUrlInput.value) queueUrlInput.value = saved.url;
     updateVisibleApiGroups();
     updateLocalFileVisibility();
+}
+
+function applyFieldValue(el, value) {
+    // Element ids and <script> bodies live in the same template, so a missing
+    // element means the HTML drifted -- surface it loudly instead of letting a
+    // straggler kill every listener wired after it.
+    if (!el) { console.error('restoreSettings: element not found'); return; }
+    if (value === undefined || value === '') return;
+    if (el.type === 'checkbox') {
+        el.checked = value === true || value === 'true' || value === '1' || value === 1;
+    } else {
+        el.value = value;
+    }
 }
 
 // Resolve which source the run uses: a picked local file wins over the queue
@@ -719,6 +728,17 @@ function finishReview() {
 }
 
 // ---------- Wiring ----------
+// Every id app.js touches must exist in templates/index.html -- the template
+// getElementById/duplicate-id check is enforced by test_gui_features.py.
+function wireClick(id, handler) {
+    // A missing element here means the id drifted between the template and
+    // this script; log it (the template check above fails CI too) and keep
+    // wiring the rest so one straggler can't kill the whole page.
+    const el = document.getElementById(id);
+    if (!el) { console.error(`wireClick: #${id} not found`); return; }
+    el.addEventListener('click', handler);
+}
+
 document.getElementById('mode').addEventListener('change', updateVisibleApiGroups);
 document.getElementById('llm_provider').addEventListener('change', updateVisibleApiGroups);
 
@@ -734,11 +754,11 @@ queueUrlInput.addEventListener('keydown', (e) => {
         document.getElementById('add-to-queue-btn').click();
     }
 });
-document.getElementById('review-close-btn').addEventListener('click', closeReview);
+wireClick('review-close-btn', closeReview);
 
 // ---------- Processing (silence / blur / music) wiring ----------
 document.getElementById('music_volume').addEventListener('input', updateMusicVolumeLabel);
-document.getElementById('music_upload_btn').addEventListener('click', async () => {
+wireClick('music_upload_btn', async () => {
     const uploadInput = document.getElementById('music_upload');
     const file = uploadInput.files && uploadInput.files[0];
     if (!file) { showToast('Выберите аудиофайл', 'error'); return; }
