@@ -32,9 +32,9 @@ def run_cookie_opts_checks():
     check("no env -> no cookie kwargs", dl._cookie_opts() == {},
           str(dl._cookie_opts()))
 
-    cfg.set_overrides({"YTDLP_COOKIES_FROM_BROWSER": "chrome"})
+    cfg.set_overrides({"YTDLP_COOKIES_FROM_BROWSER": "edge"})
     check("browser name -> cookiesfrombrowser tuple",
-          dl._cookie_opts() == {"cookiesfrombrowser": ("chrome",)},
+          dl._cookie_opts() == {"cookiesfrombrowser": ("edge",)},
           str(dl._cookie_opts()))
 
     cfg.set_overrides({"YTDLP_COOKIES_FROM_BROWSER": "firefox,default-release"})
@@ -148,10 +148,10 @@ def run_download_flow_checks():
               str(_FakeYDL.last_opts and sorted(_FakeYDL.last_opts)))
         _clear_cache()
 
-        cfg.set_overrides({"YTDLP_COOKIES_FROM_BROWSER": "chrome"})
+        cfg.set_overrides({"YTDLP_COOKIES_FROM_BROWSER": "edge"})
         dl.download_youtube_local("https://www.youtube.com/watch?v=abc123XYZ")
         check("browser env forwarded to yt-dlp",
-              _FakeYDL.last_opts.get("cookiesfrombrowser") == ("chrome",),
+              _FakeYDL.last_opts.get("cookiesfrombrowser") == ("edge",),
               str(_FakeYDL.last_opts))
         _clear_cache()
 

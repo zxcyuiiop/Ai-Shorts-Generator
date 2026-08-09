@@ -61,7 +61,7 @@ venv/Scripts/python.exe main.py "https://www.youtube.com/watch?v=..." --mode loc
 
 YouTube sometimes blocks anonymous downloads. Fix it one of three ways (documented in `.env.example`):
 
-- **Browser cookies** — add `YTDLP_COOKIES_FROM_BROWSER=chrome` (or `chromium` / `firefox` / `edge` / `brave`) to `.env`, **fully close that browser**, and retry. yt-dlp will read the session directly.
+- **Browser cookies** — add `YTDLP_COOKIES_FROM_BROWSER=edge` (or `chrome` / `firefox` / `brave`) to `.env`, **fully close that browser**, and retry. yt-dlp will read the session directly.
 - **Cookies file** — export cookies with the "Get cookies.txt LOCALLY" browser extension and set `YTDLP_COOKIES=C:\path\to\cookies.txt` in `.env`.
 - **Skip YouTube** — download the video yourself and pick it via the "Local file" field in the GUI; the pipeline then never talks to YouTube.
 

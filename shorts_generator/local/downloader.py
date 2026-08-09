@@ -330,8 +330,8 @@ def _wrap_bot_error(exc: BaseException) -> BaseException:
         return RuntimeError(
             "YouTube rejected the anonymous request (it wants proof you are not "
             "a bot). Ways to unblock:\n"
-            "  1) Add YTDLP_COOKIES_FROM_BROWSER=chrome (or chromium / firefox / "
-            "edge / brave) to your .env. yt-dlp then reads the session straight "
+            "  1) Add YTDLP_COOKIES_FROM_BROWSER=edge (or chrome / firefox / "
+            "brave) to your .env. yt-dlp then reads the session straight "
             "from that browser -- CLOSE the browser fully before retrying.\n"
             "  2) Or export cookies with the 'Get cookies.txt LOCALLY' browser "
             "extension and set YTDLP_COOKIES=C:\\path\\to\\cookies.txt in .env.\n"
