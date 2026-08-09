@@ -16,7 +16,16 @@ Turn any long YouTube video or local file into ready-to-publish short clips. The
 
 ## Quick start
 
-### Windows
+### 1. Grab the code
+
+```
+git clone https://github.com/zxcyuiiop/Ai-Shorts-Generator.git
+cd Ai-Shorts-Generator
+```
+
+### 2. Install + run
+
+#### Windows
 
 Double-click `install.bat` (or run it from a terminal). It checks Python 3.10+, creates a local `.venv`-style `venv/`, installs everything, and can optionally copy `.env.example` → `.env` so you can fill in your API keys.
 
@@ -28,7 +37,7 @@ start_gui.bat
 
 Open http://localhost:5000 in your browser.
 
-### Linux / macOS
+#### Linux / macOS
 
 ```
 chmod +x install.sh start_gui.sh
