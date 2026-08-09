@@ -24,6 +24,7 @@ from .silence import (
 )
 from .blurpad import apply_blur_padding, blurpad_enabled_for
 from .music import mix_music, music_file_valid, music_settings_from_env
+from .captions import burn_captions, captions_enabled, write_caption_ass
 
 
 def _get_priority_class():
@@ -490,6 +491,7 @@ def crop_clip_local(
     aspect_ratio: str,
     out_path: str,
     finalize: bool = True,
+    transcript: Optional[Dict] = None,
 ) -> str:
     """Cut + reframe one highlight. With ``finalize=False`` (draft) the heavy
     effects (blur bars / overlay / music) are skipped — a plain reframed clip
@@ -512,6 +514,7 @@ def crop_clip_local(
         # T8: jump-cut silent pauses out of the cut clip before reframing.
         # Env: SILENCE_CUT ('1') master switch; SILENCE_NOISE_DB ('-35'),
         # SILENCE_MIN_DUR ('0.45'), SILENCE_KEEP_EXTRA ('0.15').
+        caption_segs = None  # kept segments, once known — captions.py consumes them
         if str(env("SILENCE_CUT", "1") or "").strip().lower() not in ("0", "false", "no"):
             try:
                 noise_db = float(env("SILENCE_NOISE_DB", "-35") or "-35")
@@ -528,8 +531,24 @@ def crop_clip_local(
                     tight_path = cut_path + ".tight.mp4"
                     cut_pauses(cut_path, tight_path, segs)
                     os.replace(tight_path, cut_path)
+                    caption_segs = segs
             except Exception as e:
                 print(f"[clip/local] silence-cut skipped: {e}")
+
+        # T-cap: with subtitles enabled, write the .ass sidecar here — the only
+        # moment the exact silence-cut segments are known, which the word
+        # timings must be remapped past. The sidecar sits next to the draft;
+        # the draft itself stays uncaptioned (burn happens at finalize).
+        if captions_enabled() and transcript:
+            try:
+                write_caption_ass(transcript, start_time, end_time,
+                                  out_path + ".ass",
+                                  kept_segments=caption_segs)
+            except Exception as e:
+                print(f"[clip/local] caption sidecar skipped: {e}")
+        elif captions_enabled():
+            print("[clip/local] captions enabled but no transcript — sidecar skipped",
+                  flush=True)
 
         _reframe_vertical(cut_path, out_path, aspect_ratio)
         t2 = time.time()
