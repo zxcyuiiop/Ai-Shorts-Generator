@@ -116,7 +116,8 @@ def _mk_job(draft_abs):
         "_params": {
             "mode": "local", "aspect_ratio": "9:16", "api_keys": {},
             "overlay_enabled": "0", "music_enabled": "0", "blur_bars": "1",
-            "silence_cut": "0",
+            "silence_cut": "0", "captions_enabled": "1",
+            "caption_style": "karaoke", "face_track": "1",
         },
         "result": {"shorts": [{"clip_url": draft_abs, "title": "A",
                                 "draft_aspect": "16:9", "target_aspect": "9:16"}]},
@@ -152,7 +153,7 @@ def run_save_endpoint_checks():
                 f.write(b"reframed:" + aspect.encode())
             return out_path
 
-        def finalize_touches(path, aspect):
+        def finalize_touches(path, aspect, captions_ass=None):
             with open(path, "ab") as f:
                 f.write(b"+fx")
 
@@ -258,7 +259,7 @@ def run_save_overwrite_check():
         rel_dir = os.path.relpath(tmp, os.path.abspath(webapp.LOCAL_OUTPUT_DIR)).replace("\\", "/")
         clip._reframe_vertical = Recorder(
             fn=lambda i, o, a: open(o, "wb").write(open(i, "rb").read()))
-        clip.finalize_clip_local = Recorder(fn=lambda p, a: open(p, "ab").write(b"+fx"))
+        clip.finalize_clip_local = Recorder(fn=lambda p, a, captions_ass=None: open(p, "ab").write(b"+fx"))
 
         for body in (b"v1", b"v2"):
             draft_abs = os.path.join(tmp, "clip.mp4")
@@ -284,6 +285,64 @@ def run_save_overwrite_check():
         clip._reframe_vertical = real_reframe
         clip.finalize_clip_local = real_finalize
         shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(os.path.join(os.path.abspath(webapp.LOCAL_OUTPUT_DIR), "saved", rel_dir),
+                      ignore_errors=True)
+
+
+def run_save_captions_sidecar_check():
+    """The caption sidecar must survive a save: passed to finalize (so the
+    burn finds it despite the tmp name) and moved alongside the clip into
+    saved/ afterwards."""
+    client = webapp.app.test_client()
+    real_reframe = clip._reframe_vertical
+    real_finalize = clip.finalize_clip_local
+
+    uploads = os.path.abspath(webapp.UPLOAD_DIR)
+    os.makedirs(uploads, exist_ok=True)
+    tmpdir = tempfile.mkdtemp(prefix="review-caps-", dir=uploads)
+    try:
+        rel_dir = os.path.relpath(tmpdir, os.path.abspath(webapp.LOCAL_OUTPUT_DIR)).replace("\\", "/")
+        draft_abs = os.path.join(tmpdir, "cap.mp4")
+        with open(draft_abs, "wb") as f:
+            f.write(b"draft")
+        sidecar = draft_abs + ".ass"
+        with open(sidecar, "w", encoding="utf-8") as f:
+            f.write("[Script Info]\n")
+
+        clip._reframe_vertical = Recorder(
+            fn=lambda i, o, a: open(o, "wb").write(open(i, "rb").read()))
+        # finalize with a captions_ass kwarg must burn (append) and NOT touch sidecar
+        def fake_finalize(path, aspect, captions_ass=None):
+            with open(path, "ab") as f:
+                f.write(b"+fx")
+            return path
+        fin = Recorder(fn=fake_finalize)
+        clip.finalize_clip_local = fin
+
+        webapp.jobs["job-caps"] = _mk_job(os.path.realpath(draft_abs))
+        try:
+            r = client.post("/api/shorts/save",
+                            json={"url": f"/output/{rel_dir}/cap.mp4"})
+            body = r.get_json() or {}
+            check("save(captions): 200", r.status_code == 200,
+                  f"status={r.status_code} body={body}")
+            calls = fin.calls
+            kw = calls[0][1] if calls else {}
+            check("save(captions): finalize got captions_ass",
+                  bool(calls) and kw.get("captions_ass") == draft_abs + ".ass",
+                  f"calls={calls}")
+            saved_ass = os.path.join(os.path.abspath(webapp.LOCAL_OUTPUT_DIR),
+                                      "saved", rel_dir, "cap.mp4.ass")
+            check("save(captions): sidecar moved into saved/",
+                  os.path.isfile(saved_ass), saved_ass)
+            check("save(captions): sidecar gone from draft dir",
+                  not os.path.exists(sidecar))
+        finally:
+            webapp.jobs.pop("job-caps", None)
+    finally:
+        clip._reframe_vertical = real_reframe
+        clip.finalize_clip_local = real_finalize
+        shutil.rmtree(tmpdir, ignore_errors=True)
         shutil.rmtree(os.path.join(os.path.abspath(webapp.LOCAL_OUTPUT_DIR), "saved", rel_dir),
                       ignore_errors=True)
 
@@ -361,6 +420,7 @@ def main():
     run_pipeline_draft_checks()
     run_save_endpoint_checks()
     run_save_overwrite_check()
+    run_save_captions_sidecar_check()
     run_delete_endpoint_checks()
     run_saved_listing_check()
 

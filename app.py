@@ -1016,17 +1016,24 @@ def save_short():
         p.get("overlay_enabled"), p.get("overlay_x"), p.get("overlay_y"),
         p.get("music_enabled"), p.get("music_file"), p.get("music_volume"),
         p.get("silence_cut"), p.get("blur_bars"),
+        p.get("captions_enabled"), p.get("caption_style"), p.get("face_track"),
     )
 
     # Work on a temp sibling, never on the draft itself.
     tmp = abs_path + ".tmp_save.mp4"
     draft_backup = abs_path + ".draft.mp4"
     leftover = [abs_path + s for s in _SAVE_LEFTOVER_SUFFIXES]
+    # Caption sidecar lives next to the DRAFT (<draft>.mp4.ass), but finalize
+    # looks for <tmp>.ass by default -- pass it explicitly or captions are
+    # silently skipped even when enabled.
+    captions_ass = abs_path + ".ass"
+    if not os.path.isfile(captions_ass):
+        captions_ass = None
 
     set_overrides(overrides)
     try:
         _reframe_vertical(abs_path, tmp, aspect)
-        finalize_clip_local(tmp, aspect)
+        finalize_clip_local(tmp, aspect, captions_ass=captions_ass)
     except Exception as e:
         for path in leftover:
             try:
@@ -1050,10 +1057,20 @@ def save_short():
     final_path = os.path.join(saved_dir, os.path.basename(abs_path))
     final_part = final_path + ".part"
 
+    # The caption sidecar travels with its clip: delete on burn, move to saved/
+    # otherwise (so the review panel still knows captions belong to this clip).
+    final_ass = os.path.join(saved_dir, os.path.basename(captions_ass)) \
+        if captions_ass else None
+
     try:
         shutil.move(tmp, final_part)
         os.replace(final_part, final_path)
         os.remove(abs_path)
+        if captions_ass and final_ass:
+            try:
+                shutil.move(captions_ass, final_ass)
+            except OSError:
+                pass
     except OSError as e:
         try:
             if not os.path.isfile(final_path) and not os.path.isfile(abs_path):
@@ -1250,6 +1267,7 @@ def finalize_short():
         p.get("overlay_enabled"), p.get("overlay_x"), p.get("overlay_y"),
         p.get("music_enabled"), p.get("music_file"), p.get("music_volume"),
         p.get("silence_cut"), p.get("blur_bars"),
+        p.get("captions_enabled"), p.get("caption_style"), p.get("face_track"),
     )
 
     # Backup so a mid-crash can't lose the approved-but-not-yet-deleted draft.

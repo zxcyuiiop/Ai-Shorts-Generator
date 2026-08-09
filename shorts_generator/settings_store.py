@@ -45,6 +45,8 @@ GUI_ENV_ALIASES = {
     "music_file": ("MUSIC_FILE",),
     "music_volume": ("MUSIC_VOLUME",),
     "silence_cut": ("SILENCE_CUT",),
+    "captions_enabled": ("CAPTIONS_ENABLED",),
+    "face_track": ("FACE_TRACK_ENABLED",),
 }
 
 # Aliases are part of the persisted file, so they must survive load()'s filter

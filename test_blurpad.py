@@ -20,6 +20,15 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Neutralize the settings layer BEFORE importing anything that reads it:
+# blurpad reads BLUR_BARS through config.env(), which consults the real
+# settings.local.json -- a saved blur_bars=1 there would shadow the
+# os.environ values this test flips below.
+_TMP = tempfile.mkdtemp(prefix="blurpad-settings-")
+from shorts_generator import settings_store  # noqa: E402
+
+settings_store.SETTINGS_PATH = os.path.join(_TMP, "settings.local.json")
+
 from shorts_generator.local import blurpad as bp  # noqa: E402
 
 failures = []
@@ -169,6 +178,7 @@ def main():
     finally:
         clear_env()
         shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(_TMP, ignore_errors=True)
 
     print()
     if failures:
