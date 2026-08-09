@@ -287,6 +287,13 @@ def _load_face_detector():
     OpenCV 5 dropped CascadeClassifier from the main wheel, so face tracking is
     treated as an optional enhancement rather than a requirement -- without this
     guard the whole reframe step dies and clips come out uncropped.
+
+    Additionally, OpenCV's C++ FileStorage.open() cannot open non-ANSI paths:
+    when the repo lives under a Cyrillic directory (e.g. ".../AI-... — копия"),
+    cv2.data.haarcascades points inside the venv and the XML "loads" as empty.
+    We therefore copy the cascade to the system temp dir (pure ASCII) first and
+    load it from there -- that keeps face detection working regardless of where
+    the user unpacked the project.
     """
     try:
         import cv2  # type: ignore
@@ -298,15 +305,27 @@ def _load_face_detector():
         print("[clip/local] OpenCV lacks CascadeClassifier – face detection disabled.")
         return None
 
-    try:
-        cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        )
-        if cascade.empty():
-            print("[clip/local] Failed to load Haar cascade – face detection disabled.")
-            return None
-    except Exception as e:
-        print(f"[clip/local] Error loading Haar cascade: {e}")
+    def _load_from(path):
+        cascade = cv2.CascadeClassifier(path)
+        return None if cascade.empty() else cascade
+
+    orig = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    cascade = _load_from(orig)
+    if cascade is None:
+        # Cyrillic/Unicode path fallback: copy to an ASCII temp file and retry.
+        try:
+            import tempfile, shutil
+            tmp_dir = tempfile.gettempdir()
+            tmp_path = os.path.join(tmp_dir, "ayt_face_cascade.xml")
+            if not os.path.isfile(tmp_path):
+                shutil.copy2(orig, tmp_path)
+            cascade = _load_from(tmp_path)
+        except Exception as e:
+            print(f"[clip/local] cascade temp-copy fallback failed: {e}")
+            cascade = None
+
+    if cascade is None:
+        print("[clip/local] Failed to load Haar cascade – face detection disabled.")
         return None
 
     print("[clip/local] Face detector loaded successfully.")

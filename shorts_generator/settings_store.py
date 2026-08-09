@@ -46,6 +46,7 @@ GUI_ENV_ALIASES = {
     "music_volume": ("MUSIC_VOLUME",),
     "silence_cut": ("SILENCE_CUT",),
     "captions_enabled": ("CAPTIONS_ENABLED",),
+    "caption_position": ("CAPTION_POSITION",),
     "face_track": ("FACE_TRACK_ENABLED",),
 }
 
@@ -91,6 +92,8 @@ ALLOWED_FIELDS = SECRET_FIELDS | {alias for names in GUI_ENV_ALIASES.values() fo
     # Captions (opt-in karaoke/classic subtitles) + face-track kill-switch
     "captions_enabled",
     "caption_style",
+    "caption_position",
+    "caption_margin_v",
     "face_track",
 }
 

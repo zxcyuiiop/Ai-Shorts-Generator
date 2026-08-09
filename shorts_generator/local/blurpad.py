@@ -3,9 +3,11 @@
 Classic blurred-background fit -- NOTHING is cropped:
 
   * background: the video scaled to cover OUT_W x OUT_H (1080x1920),
-    centre-cropped to the canvas size, dimmed (BLURPAD_DIM, default 0.15)
-    and heavily blurred (gblur sigma=BLURPAD_SIGMA, default 25) so the
-    soft backdrop never fights the sharp foreground;
+    centre-cropped to the canvas size, dimmed (BLURPAD_DIM, default 0.06)
+    and blurred (gblur sigma=BLURPAD_SIGMA, default 18) -- the default dim
+    keeps the backdrop close to the source frame's natural brightness (as
+    seen in the mobile-clip examples) while the blur keeps it soft enough
+    to never fight the sharp foreground;
   * foreground: the WHOLE frame, scaled to fit inside the fg box with
     force_original_aspect_ratio=decrease (16:9 source -> 1080x608), width/height
     rounded down to even numbers (yuv420p rejects odd dims), optionally
@@ -54,24 +56,25 @@ def _fg_scale_percent() -> float:
 
 
 def _blur_sigma() -> float:
-    """BLURPAD_SIGMA env: gblur sigma for the background layer. Invalid -> 25."""
+    """BLURPAD_SIGMA env: gblur sigma for the background layer. Invalid -> 18."""
     try:
-        return float(str(env("BLURPAD_SIGMA", "25") or "25").strip())
+        return float(str(env("BLURPAD_SIGMA", "18") or "18").strip())
     except (TypeError, ValueError):
-        return 25.0
+        return 18.0
 
 
 def _dim_amount() -> float:
     """BLURPAD_DIM env: background darkening 0..0.7 (eq brightness=-X before blur).
 
-    Default 0.15 -- a gentle dim so text/edges in the blurred copy do not
-    distract from the foreground. Clamped at 0.7: beyond that the backdrop
+    Default 0.06 -- barely darkened, keeping the backdrop close to the source
+    frame's natural brightness (as seen in the mobile-clip examples) instead
+    of crushing it toward black. Clamped at 0.7: beyond that the backdrop
     is essentially black and the blur stops being visible.
     """
     try:
-        return _clamp(float(str(env("BLURPAD_DIM", "0.15") or "0.15").strip()), 0.0, 0.7)
+        return _clamp(float(str(env("BLURPAD_DIM", "0.06") or "0.06").strip()), 0.0, 0.7)
     except (TypeError, ValueError):
-        return 0.15
+        return 0.06
 
 
 def blurpad_enabled_for(aspect_ratio: str) -> bool:

@@ -91,6 +91,26 @@ def run_env_checks():
           cap.caption_settings_from_env()["style"] == "classic")
     cfg.clear_overrides()
 
+    # Position knob: default bottom, whitelist, bogus falls back.
+    check("default position is bottom",
+          cap.caption_settings_from_env()["position"] == "bottom")
+    cfg.set_overrides({"CAPTION_POSITION": "TOP"})
+    check("position accepts top (case-insensitive)",
+          cap.caption_settings_from_env()["position"] == "top")
+    cfg.set_overrides({"CAPTION_POSITION": "bogus"})
+    check("bogus position falls back to bottom",
+          cap.caption_settings_from_env()["position"] == "bottom")
+    cfg.clear_overrides()
+
+    # The position drives the ASS Alignment field in both style lines
+    # (2=bottom, 5=center, 8=top on the numpad layout).
+    base = cap.caption_settings_from_env()
+    for pos, align in (("bottom", 2), ("center", 5), ("top", 8)):
+        header = cap._header({**base, "position": pos})
+        check(f"position={pos} -> Alignment {align} in both styles",
+              header.count(f"3,1,{align},60,60,") == 2,
+              [ln for ln in header.splitlines() if ln.startswith("Style:")][0])
+
 
 def run_remap_checks():
     # kept segments: [0..4] and [8..12] -- the [4..8] gap is removed.
@@ -354,6 +374,22 @@ def run_app_checks():
     built = webapp._overrides_from("local", {}, caption_style="explode")
     check("overrides: bogus caption_style dropped", "CAPTION_STYLE" not in built, str(built))
 
+    # Position + margin overrides map through; bogus/invalid values dropped.
+    built = webapp._overrides_from("local", {}, caption_position="TOP",
+                                   caption_margin_v=200)
+    check("overrides: CAPTION_POSITION=top",
+          built.get("CAPTION_POSITION") == "top", str(built))
+    check("overrides: CAPTION_MARGIN_V=200",
+          built.get("CAPTION_MARGIN_V") == "200", str(built))
+    built = webapp._overrides_from("local", {}, caption_position="sideways",
+                                   caption_margin_v="not-a-number")
+    check("overrides: bogus position/margin dropped",
+          "CAPTION_POSITION" not in built and "CAPTION_MARGIN_V" not in built,
+          str(built))
+    built = webapp._overrides_from("local", {}, caption_margin_v=99999)
+    check("overrides: margin clamped to 1200",
+          built.get("CAPTION_MARGIN_V") == "1200", str(built))
+
     # field=None -> key absent (settings.local.json may supply it instead).
     built = webapp._overrides_from("local", {})
     check("overrides: untouched fields absent",
@@ -369,6 +405,7 @@ def run_app_checks():
         "url": "https://youtu.be/captions", "mode": "local",
         "num_clips": 1, "captions_enabled": True,
         "caption_style": "classic", "face_track": False,
+        "caption_position": "top", "caption_margin_v": 200,
     })
     check("generate with caption keys -> 202", r.status_code == 202, str(r.status_code))
     jid = r.get_json()["job_id"]
@@ -385,6 +422,12 @@ def run_app_checks():
           str(saved.get("caption_style")))
     check("generate persisted face_track", saved.get("face_track") is False,
           str(saved.get("face_track")))
+    check("generate persisted caption_position", saved.get("caption_position") == "top",
+          str(saved.get("caption_position")))
+    check("generate persisted CAPTION_POSITION alias",
+          saved.get("CAPTION_POSITION") == "top", str(saved.get("CAPTION_POSITION")))
+    check("generate persisted caption_margin_v", saved.get("caption_margin_v") == 200,
+          str(saved.get("caption_margin_v")))
 
 
 def main():

@@ -5,7 +5,7 @@ yt-dlp>=2024.1.1
 faster-whisper>=1.0.0
 openai>=1.0.0
 google-genai>=1.0.0
-opencv-python>=4.8.0
+opencv-python>=4.8.0,<5  # 5.x dropped CascadeClassifier + the haarcascade files the face-tracker uses
 
 # GPU transcription. faster-whisper needs the CUDA compute libraries, which
 # ship separately from the NVIDIA driver -- without them a cuda run dies with

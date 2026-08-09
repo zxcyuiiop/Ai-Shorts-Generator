@@ -82,9 +82,13 @@ def caption_settings_from_env() -> Dict:
     style = str(env("CAPTION_STYLE", "karaoke") or "").strip().lower()
     if style not in ("karaoke", "classic"):
         style = "karaoke"
+    position = str(env("CAPTION_POSITION", "bottom") or "").strip().lower()
+    if position not in ("bottom", "center", "top"):
+        position = "bottom"
     return {
         "enabled": captions_enabled(),
         "style": style,
+        "position": position,
         "font": str(env("CAPTION_FONT", "Arial") or "Arial").strip() or "Arial",
         "font_size": _int("CAPTION_FONT_SIZE", 72, 8, 300),
         "max_words": _int("CAPTION_MAX_WORDS", 4, 1, 20),
@@ -217,14 +221,21 @@ def _header(settings: Dict) -> str:
     active = settings["active_color"]
     outline = settings["outline_color"]
     shadow = settings["shadow_color"]
+    # ASS numpad alignment: 2=bottom-center, 5=mid-center, 8=top-center.
+    # MarginV measures from that edge, so "top" + margin_v=150 sits 150px
+    # BELOW the top border -- the knob behaves the same at every position.
+    alignment = {"bottom": 2, "center": 5, "top": 8}.get(
+        settings.get("position") or "bottom", 2)
     karaoke_style = (
         f"Style: Karaoke,{font},{size},{active},{text},{outline},{shadow},"
-        "-1,0,0,0,100,100,1,0,1,3,1,2,60,60,"
+        "-1,0,0,0,100,100,1,0,1,3,1,"
+        f"{alignment},60,60,"
         f"{margin_v},1"
     )
     classic_style = (
         f"Style: Classic,{font},{size},{text},{text},{outline},{shadow},"
-        "-1,0,0,0,100,100,0,0,1,3,1,2,60,60,"
+        "-1,0,0,0,100,100,0,0,1,3,1,"
+        f"{alignment},60,60,"
         f"{margin_v},1"
     )
     return (
@@ -293,7 +304,7 @@ def write_caption_ass(transcript: Optional[Dict],
             _log(f"[captions/local] {dropped} word(s) fell into cut silence gaps")
     if not words:
         _log("[captions/local] no word timings in clip window — sidecar not written "
-             "(re-transcribe to regenerate the .srt cache with words)")
+             "(a fresh run re-transcribes automatically; delete the .srt cache to force)")
         return None
 
     events = []

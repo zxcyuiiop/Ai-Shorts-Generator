@@ -86,9 +86,9 @@ def main():
         check("no crop on fg branch", "decrease,crop" not in filt and "[fg]" in filt, filt)
         check("even-dims fg pre-shrink present", "trunc(iw*100/100/2)*2" in filt, filt)
         check("centred overlay (W-w)/2:(H-h)/2", "overlay=(W-w)/2:(H-h)/2" in filt, filt)
-        check("default sigma 25", "gblur=sigma=25" in filt, filt)
-        check("default dim 0.15 before blur",
-              "eq=brightness=-0.15,gblur=sigma=25" in filt, filt)
+        check("default sigma 18", "gblur=sigma=18" in filt, filt)
+        check("default dim 0.06 before blur",
+              "eq=brightness=-0.06,gblur=sigma=18" in filt, filt)
 
         # bg branch: increase-scale then crop (the cover trick), only the bg crops
         # filter segments: [0:v]split / [a]...=[bg] / [b]...=[fg] / [bg][fg]overlay...

@@ -207,6 +207,8 @@ def _worker():
                 captions_enabled=p["captions_enabled"],
                 caption_style=p["caption_style"],
                 face_track=p["face_track"],
+                caption_position=p["caption_position"],
+                caption_margin_v=p["caption_margin_v"],
             )
         except Exception:  # background_task already records its own failures
             import traceback
@@ -296,7 +298,8 @@ def _overrides_from(mode, api_keys, whisper_device=None, whisper_model=None,
                     overlay_enabled=None, overlay_x=None, overlay_y=None,
                     music_enabled=None, music_file=None, music_volume=None,
                     silence_cut=None, blur_bars=None,
-                    captions_enabled=None, caption_style=None, face_track=None):
+                    captions_enabled=None, caption_style=None, face_track=None,
+                    caption_position=None, caption_margin_v=None):
     """Translate browser field names into config setting names.
 
     Secrets arrive either as a real value or as the mask placeholder, which means
@@ -388,6 +391,15 @@ def _overrides_from(mode, api_keys, whisper_device=None, whisper_model=None,
         style = str(caption_style).strip().lower()
         if style in ("karaoke", "classic"):
             out["CAPTION_STYLE"] = style
+    if caption_position is not None:
+        pos = str(caption_position).strip().lower()
+        if pos in ("bottom", "center", "top"):
+            out["CAPTION_POSITION"] = pos
+    if caption_margin_v is not None:
+        try:
+            out["CAPTION_MARGIN_V"] = str(max(0, min(1200, int(float(caption_margin_v)))))
+        except (TypeError, ValueError):
+            pass  # leave the env/default value in effect
     if face_track is not None:
         out["FACE_TRACK_ENABLED"] = "1" if _as_bool(face_track) else "0"
 
@@ -428,7 +440,8 @@ def background_task(job_id, youtube_url, num_clips, aspect_ratio,
                     overlay_enabled=None, overlay_x=None, overlay_y=None,
                     music_enabled=None, music_file=None, music_volume=None,
                     silence_cut=None, blur_bars=None,
-                    captions_enabled=None, caption_style=None, face_track=None):
+                    captions_enabled=None, caption_style=None, face_track=None,
+                    caption_position=None, caption_margin_v=None):
     """Run generate_shorts, streaming its own log output to the browser."""
     from shorts_generator.config import clear_overrides, set_overrides
 
@@ -442,7 +455,8 @@ def background_task(job_id, youtube_url, num_clips, aspect_ratio,
                                       overlay_enabled, overlay_x, overlay_y,
                                       music_enabled, music_file, music_volume,
                                       silence_cut, blur_bars,
-                                      captions_enabled, caption_style, face_track))
+                                      captions_enabled, caption_style, face_track,
+                                      caption_position, caption_margin_v))
 
         with jobs_lock:
             jobs[job_id]["status"] = "running"
@@ -636,6 +650,8 @@ def generate():
     captions_enabled = data.get("captions_enabled")
     caption_style = _get("caption_style")
     face_track = data.get("face_track")
+    caption_position = _get("caption_position")
+    caption_margin_v = data.get("caption_margin_v")
 
     if not youtube_url:
         return jsonify({"error": "Missing URL or file path"}), 400
@@ -675,6 +691,8 @@ def generate():
         "captions_enabled": captions_enabled,
         "caption_style": caption_style,
         "face_track": face_track,
+        "caption_position": caption_position,
+        "caption_margin_v": caption_margin_v,
     }
     with jobs_lock:
         jobs[job_id] = {
@@ -727,6 +745,8 @@ def generate():
         "captions_enabled": captions_enabled,
         "caption_style": caption_style,
         "face_track": face_track,
+        "caption_position": caption_position,
+        "caption_margin_v": caption_margin_v,
         **{k: v for k, v in api_keys.items() if v},
     })
 
@@ -1017,6 +1037,7 @@ def save_short():
         p.get("music_enabled"), p.get("music_file"), p.get("music_volume"),
         p.get("silence_cut"), p.get("blur_bars"),
         p.get("captions_enabled"), p.get("caption_style"), p.get("face_track"),
+        p.get("caption_position"), p.get("caption_margin_v"),
     )
 
     # Work on a temp sibling, never on the draft itself.
@@ -1268,6 +1289,7 @@ def finalize_short():
         p.get("music_enabled"), p.get("music_file"), p.get("music_volume"),
         p.get("silence_cut"), p.get("blur_bars"),
         p.get("captions_enabled"), p.get("caption_style"), p.get("face_track"),
+        p.get("caption_position"), p.get("caption_margin_v"),
     )
 
     # Backup so a mid-crash can't lose the approved-but-not-yet-deleted draft.

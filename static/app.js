@@ -37,14 +37,15 @@ const STATUS_LABELS = {
 // Every field the server persists. Same names on both sides so save/restore
 // stays a straight loop rather than a hand-maintained mapping.
 const SETTING_FIELDS = [
-    'url', 'mode', 'llm_provider', 'num_clips', 'aspect_ratio', 'format', 'language',
+    'mode', 'llm_provider', 'num_clips', 'aspect_ratio', 'format', 'language',
     'muapi_key', 'openai_key', 'openai_model', 'gemini_key', 'gemini_model',
     'ollama_url', 'ollama_model', 'nim_key', 'nim_url', 'nim_model',
-    'whisper_device', 'whisper_model', 'source_type', 'clip_length',
+    'whisper_device', 'whisper_model', 'clip_length',
     'overlay_position', 'overlay_margin', 'overlay_scale', 'use_overlay_opencv',
     'overlay_enabled', 'overlay_x', 'overlay_y',
     'silence_cut', 'blur_bars', 'music_enabled', 'music_file', 'music_volume',
     'captions_enabled', 'caption_style', 'face_track',
+    'caption_position', 'caption_margin_v',
 ];
 
 const SECRET_MASK = '••••••••';
@@ -97,22 +98,12 @@ function appendLog(line) {
     if (atBottom) pipelineLog.scrollTop = pipelineLog.scrollHeight;
 }
 
-function updateSourceTypeVisibility() {
-    const sourceType = document.getElementById('source_type').value;
-    const urlGroup = document.getElementById('url-group');
-    const fileGroup = document.getElementById('file-group');
-
-    if (sourceType === 'file') {
-        urlGroup.classList.add('hidden');
-        fileGroup.classList.remove('hidden');
-        document.getElementById('url').removeAttribute('required');
-        document.getElementById('video_file').setAttribute('required', 'required');
-    } else {
-        urlGroup.classList.remove('hidden');
-        fileGroup.classList.add('hidden');
-        document.getElementById('url').setAttribute('required', 'required');
-        document.getElementById('video_file').removeAttribute('required');
-    }
+function updateLocalFileVisibility() {
+    // Uploading a local file only works in Local mode -- dim (not hide) the
+    // section otherwise so the panel doesn't look broken in API mode.
+    const active = document.getElementById('mode').value === 'local';
+    const sec = document.getElementById('local-file-section');
+    if (sec) sec.classList.toggle('inactive', !active);
 }
 
 function updateVisibleApiGroups() {
@@ -144,6 +135,7 @@ function updateVisibleApiGroups() {
     document.querySelectorAll('.api-group').forEach(group => {
         group.classList.toggle('inactive', !activeGroups.includes(group.id));
     });
+    updateLocalFileVisibility();
 }
 
 function applyOverlaySettings(saved) {
@@ -192,8 +184,28 @@ async function restoreSettings() {
     updateMusicVolumeLabel();
     updateMusicFileLabel();
     if (saved.url && !queueUrlInput.value) queueUrlInput.value = saved.url;
-    updateSourceTypeVisibility();
     updateVisibleApiGroups();
+    updateLocalFileVisibility();
+}
+
+// Resolve which source the run uses: a picked local file wins over the queue
+// URL (the file lands under output/uploads/, and its path is sent as `url`
+// with source_type='file' -- the same contract /api/generate already speaks).
+async function resolveSource() {
+    const fileInput = document.getElementById('video_file');
+    const file = fileInput && fileInput.files && fileInput.files[0];
+    if (file) {
+        const fd = new FormData();
+        fd.append('video', file);
+        const resp = await fetch('/api/upload', { method: 'POST', body: fd });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || `Upload failed (HTTP ${resp.status})`);
+        fileInput.value = '';
+        return { url: data.path, source_type: 'file' };
+    }
+    const url = (queueUrlInput.value || '').trim();
+    if (!url) throw new Error('Введите YouTube URL или выберите локальный файл.');
+    return { url, source_type: 'url' };
 }
 
 function collectApiKeys(mode, provider) {
@@ -237,6 +249,9 @@ function collectProcessingSettings() {
     // endpoint ignores them until the backend plumbing lands, but save-settings
     // already persists them.
     const volume = parseInt(document.getElementById('music_volume').value, 10);
+    // Empty margin box -> null ("use the backend default") rather than 0.
+    const marginRaw = document.getElementById('caption_margin_v').value;
+    const margin = parseInt(marginRaw, 10);
     return {
         silence_cut: !!document.getElementById('silence_cut').checked,
         blur_bars: !!document.getElementById('blur_bars').checked,
@@ -246,6 +261,9 @@ function collectProcessingSettings() {
         captions_enabled: !!document.getElementById('captions_enabled').checked,
         caption_style: document.getElementById('caption_style').value,
         face_track: !!document.getElementById('face_track').checked,
+        caption_position: document.getElementById('caption_position').value,
+        caption_margin_v: (marginRaw !== '' && isFinite(margin))
+            ? Math.max(0, Math.min(1200, margin)) : null,
     };
 }
 
@@ -696,7 +714,6 @@ function finishReview() {
 // ---------- Wiring ----------
 document.getElementById('mode').addEventListener('change', updateVisibleApiGroups);
 document.getElementById('llm_provider').addEventListener('change', updateVisibleApiGroups);
-document.getElementById('source_type').addEventListener('change', updateSourceTypeVisibility);
 
 document.getElementById('add-to-queue-btn').addEventListener('click', () => {
     const url = (queueUrlInput.value || '').trim();
@@ -738,7 +755,7 @@ document.getElementById('music_upload_btn').addEventListener('click', async () =
 });
 
 updateVisibleApiGroups();
-updateSourceTypeVisibility();
+updateLocalFileVisibility();
 updateMusicVolumeLabel();
 updateMusicFileLabel();
 restoreSettings();
@@ -748,14 +765,22 @@ setInterval(pollQueue, 2500);
 form.addEventListener('submit', async (e) => {
     e.preventDefault();
 
-    const url = (queueUrlInput.value || '').trim();
     const mode = document.getElementById('mode').value;
 
-    if (!url) {
-        showError('Введите YouTube URL.');
+    let source;
+    try {
+        source = await resolveSource();
+    } catch (err) {
+        showError(err.message);
         return;
     }
-    if (mode !== 'local' && !/^https?:\/\//i.test(url)) {
+    const { url, source_type } = source;
+
+    if (source_type === 'file' && mode !== 'local') {
+        showError('Локальный файл работает только в «Локальном» режиме. Смените режим или уберите файл.');
+        return;
+    }
+    if (source_type === 'url' && mode !== 'local' && !/^https?:\/\//i.test(url)) {
         // API mode can only reach public URLs; a local path would fail on a path
         // it cannot reach. Same rule the clipboard button enforces.
         showError('Для режима API нужен публичный URL. Переключите режим на «Локальный» для локального файла.');
@@ -778,7 +803,7 @@ form.addEventListener('submit', async (e) => {
     try {
         const payload = {
             url,
-            source_type: 'url',
+            source_type,
             mode,
             llm_provider: provider,
             num_clips: parseInt(document.getElementById('num_clips').value, 10),

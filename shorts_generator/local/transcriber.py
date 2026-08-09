@@ -3,6 +3,7 @@
 Reads a local media file and returns the same shape the highlight generator
 expects: {duration, segments[start, end, text]}.
 """
+import json
 import os
 import re
 from pathlib import Path
@@ -16,6 +17,12 @@ def _transcript_cache_path(media_path: str) -> Path:
     cache_dir = Path(env("LOCAL_OUTPUT_DIR", "output"))
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir / (Path(media_path).stem + ".srt")
+
+
+def _words_cache_path(media_path: str) -> Path:
+    """Word timings don't fit the .srt format, so they live in a .words.json
+    sibling. A caption toggle then never forces a whisper re-run."""
+    return _transcript_cache_path(media_path).with_suffix(".words.json")
 
 
 def _format_srt_timestamp(seconds: float) -> str:
@@ -79,6 +86,35 @@ def _load_srt_cache(cache_path: Path) -> Dict:
 
     duration = segments[-1]["end"] if segments else 0.0
     return {"duration": duration, "segments": segments}
+
+
+def _write_words_cache(media_path: str, transcript: Dict) -> None:
+    """Persist word timings as JSON alongside the .srt. Best-effort: a failed
+    write just means the next caption run re-transcribes, nothing breaks."""
+    try:
+        words = [seg.get("words") for seg in transcript.get("segments", [])]
+        _words_cache_path(media_path).write_text(
+            json.dumps(words, ensure_ascii=False), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _load_words_cache(media_path: str, segments) -> bool:
+    """Merge word timings from the .words.json sidecar into `segments` (a list
+    parallel to the one _load_srt_cache returned). Returns True on success."""
+    try:
+        words = json.loads(_words_cache_path(media_path).read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return False
+    if not isinstance(words, list) or len(words) != len(segments):
+        return False
+    if not any(words_json for words_json in words):
+        return False  # all None -> recorded when captions were off
+    for seg, seg_words in zip(segments, words):
+        if seg_words:
+            seg["words"] = seg_words
+    return True
 
 
 def _register_nvidia_dll_paths() -> None:
@@ -194,8 +230,23 @@ def _resolve_device() -> str:
     return "cpu"
 
 
+def _want_word_timestamps() -> bool:
+    """True when CAPTIONS_ENABLED demands word-level transcript data.
+
+    Same truthiness rule as captions.captions_enabled(); duplicated here so
+    transcriber stays importable without pulling in the captions module.
+    """
+    return str(env("CAPTIONS_ENABLED", "0") or "").strip().lower() not in (
+        "0", "false", "no", "")
+
+
 def transcribe_local(media_path: str, language: Optional[str] = None) -> Dict:
-    """Run faster-whisper on a local file path, caching the result as .srt."""
+    """Run faster-whisper on a local file path, caching the result as .srt.
+
+    The .srt cache stores no word timings, so a cache hit while captions are
+    enabled and every cached segment lacks "words" is treated as stale: it is
+    deleted and re-transcribed with word_timestamps=True.
+    """
     cache_path = _transcript_cache_path(media_path)
     if cache_path.exists():
         source_mtime = os.path.getmtime(media_path)
@@ -206,6 +257,18 @@ def transcribe_local(media_path: str, language: Optional[str] = None) -> Dict:
             # Treat empty cache as invalid (likely from a failed/partial run) — delete and re-transcribe
             if not cached["segments"] or cached["duration"] <= 0.0:
                 print(f"[transcribe/local] cache is empty/invalid, deleting: {cache_path}", flush=True)
+                cache_path.unlink(missing_ok=True)
+            # Караоке‑субтитрам нужны пословные тайминги. Они не влезают в .srt,
+            # поэтому живут в .words.json рядом и подмёрживаются при cache hit;
+            # только когда и он пуст (кэш писался с выключенными субтитрами) —
+            # переписываем с word_timestamps=True.
+            elif _want_word_timestamps() and not _load_words_cache(
+                    media_path, cached["segments"]):
+                print(
+                    "[transcribe/local] captions enabled but cache has no word "
+                    "timings — re-transcribing",
+                    flush=True,
+                )
                 cache_path.unlink(missing_ok=True)
             else:
                 print(
@@ -238,10 +301,9 @@ def transcribe_local(media_path: str, language: Optional[str] = None) -> Dict:
     # Опционально: word_timestamps задействуем только когда стоят караоке‑
     # субтитры (CAPTIONS_ENABLED) — лишняя работа whisper'у ни к чему, если
     # субтитры выключены. Кэш .srt слов не хранит, поэтому при cache hit
-    # сегменты вернутся без "words": мы это просто документируем, ворды
-    # появятся после удаления устаревшего .srt.
-    _want_words = str(env("CAPTIONS_ENABLED", "0") or "").strip().lower() not in (
-        "0", "false", "no", "")
+    # сегменты вернутся без "words": если субтитры при этом включены, устаревший
+    # кэш уже отброшен выше и мы дошли сюда на повторную транскрипцию с словами.
+    _want_words = _want_word_timestamps()
     if _want_words:
         transcribe_kwargs["word_timestamps"] = True
     if LOCAL_WHISPER_VAD_FILTER:
@@ -295,5 +357,7 @@ def transcribe_local(media_path: str, language: Optional[str] = None) -> Dict:
     print(f"[transcribe/local] {len(segments)} segments, {duration:.0f}s of audio", flush=True)
     transcript = {"duration": duration, "segments": segments}
     cache_path = _write_srt_cache(media_path, transcript)
+    if _want_words:
+        _write_words_cache(media_path, transcript)
     print(f"[transcribe/local] wrote cache: {cache_path}", flush=True)
     return transcript
