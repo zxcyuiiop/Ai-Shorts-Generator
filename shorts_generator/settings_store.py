@@ -86,6 +86,10 @@ ALLOWED_FIELDS = SECRET_FIELDS | {alias for names in GUI_ENV_ALIASES.values() fo
     # Post-processing toggles (silence cut + blurred bars)
     "silence_cut",
     "blur_bars",
+    # Captions (opt-in karaoke/classic subtitles) + face-track kill-switch
+    "captions_enabled",
+    "caption_style",
+    "face_track",
 }
 
 MASK = "••••••••"

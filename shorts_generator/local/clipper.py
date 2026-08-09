@@ -24,6 +24,7 @@ from .silence import (
 )
 from .blurpad import apply_blur_padding, blurpad_enabled_for
 from .music import mix_music, music_file_valid, music_settings_from_env
+from .captions import burn_captions, captions_enabled, write_caption_ass
 
 
 def _get_priority_class():
@@ -388,6 +389,12 @@ def _reframe_with_ffmpeg(in_path: str, out_path: str, aspect_ratio: str) -> str:
 def _reframe_vertical(in_path: str, out_path: str, aspect_ratio: str) -> str:
     """Crop the cut clip to the target aspect ratio, tracking faces if possible."""
     print(f"[clip/local] _reframe_vertical: in={in_path}, out={out_path}, aspect={aspect_ratio}")
+    # Master switch: FACE_TRACK_ENABLED ('1' default). When off we skip the
+    # Haar detector entirely and go straight to the static centre-crop ffmpeg
+    # path — the user asked for a fixed, non-roaming frame.
+    if str(env("FACE_TRACK_ENABLED", "1") or "").strip().lower() in ("0", "false", "no"):
+        print("[clip/local] FACE_TRACK_ENABLED=0 — face tracking off, centre crop", flush=True)
+        return _reframe_with_ffmpeg(in_path, out_path, aspect_ratio)
     detect_faces = _load_face_detector()
     if detect_faces is None:
         print("[clip/local] face detector unavailable — using centre crop", flush=True)
@@ -490,6 +497,7 @@ def crop_clip_local(
     aspect_ratio: str,
     out_path: str,
     finalize: bool = True,
+    transcript: Optional[Dict] = None,
 ) -> str:
     """Cut + reframe one highlight. With ``finalize=False`` (draft) the heavy
     effects (blur bars / overlay / music) are skipped — a plain reframed clip
@@ -512,6 +520,7 @@ def crop_clip_local(
         # T8: jump-cut silent pauses out of the cut clip before reframing.
         # Env: SILENCE_CUT ('1') master switch; SILENCE_NOISE_DB ('-35'),
         # SILENCE_MIN_DUR ('0.45'), SILENCE_KEEP_EXTRA ('0.15').
+        caption_segs = None  # kept segments, once known — captions.py consumes them
         if str(env("SILENCE_CUT", "1") or "").strip().lower() not in ("0", "false", "no"):
             try:
                 noise_db = float(env("SILENCE_NOISE_DB", "-35") or "-35")
@@ -528,8 +537,24 @@ def crop_clip_local(
                     tight_path = cut_path + ".tight.mp4"
                     cut_pauses(cut_path, tight_path, segs)
                     os.replace(tight_path, cut_path)
+                    caption_segs = segs
             except Exception as e:
                 print(f"[clip/local] silence-cut skipped: {e}")
+
+        # T-cap: with subtitles enabled, write the .ass sidecar here — the only
+        # moment the exact silence-cut segments are known, which the word
+        # timings must be remapped past. The sidecar sits next to the draft;
+        # the draft itself stays uncaptioned (burn happens at finalize).
+        if captions_enabled() and transcript:
+            try:
+                write_caption_ass(transcript, start_time, end_time,
+                                  out_path + ".ass",
+                                  kept_segments=caption_segs)
+            except Exception as e:
+                print(f"[clip/local] caption sidecar skipped: {e}")
+        elif captions_enabled():
+            print("[clip/local] captions enabled but no transcript — sidecar skipped",
+                  flush=True)
 
         _reframe_vertical(cut_path, out_path, aspect_ratio)
         t2 = time.time()
@@ -565,13 +590,18 @@ def crop_clip_local(
     return out_path
 
 
-def finalize_clip_local(out_path: str, aspect_ratio: str) -> str:
+def finalize_clip_local(out_path: str, aspect_ratio: str,
+                        captions_ass: Optional[str] = None) -> str:
     """Apply the visual/audio effects to a reframed clip, in place.
 
     Blur bars (9:16), TikTok-стайл оверлей и фоновая музыка — всё то, что
     раньше жёг комп на каждом черновике. Теперь вызывается только после того,
     как пользователь одобрил черновик в ревью‑панели. Безопасно падать частично:
     каждая стадия в своём try/except, клип никогда не теряется.
+
+    Караоке‑субтитры: когда включены (`CAPTIONS_ENABLED`), берём sidecar
+    ``out_path+'.ass'`` (либо явный ``captions_ass``) и вжигаем ПОСЛЕ blurpad
+    (чтобы попасть на готовый холст 1080×1920), но ДО оверлея/музыки.
     """
     # T10: blurred bars to 1080x1920 (9:16 only, env BLUR_BARS default '1').
     if blurpad_enabled_for(aspect_ratio):
@@ -594,6 +624,18 @@ def finalize_clip_local(out_path: str, aspect_ratio: str) -> str:
                     os.replace(swap_path, out_path)
                 except OSError:
                     pass
+
+    # Караоке-субтитры: вжигать после blurpad (см. docstring), до оверлея/музыки.
+    if captions_enabled():
+        ass = captions_ass or out_path + ".ass"
+        if os.path.isfile(ass):
+            try:
+                burn_captions(out_path, ass)
+            except Exception as e:
+                print(f"[clip/local] caption burn skipped: {e}", flush=True)
+        else:
+            print(f"[clip/local] captions enabled but sidecar missing ({ass}) — "
+                  "skipping burn", flush=True)
 
     # Overlay looping TikTok animation at the bottom if file exists
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -1160,6 +1202,7 @@ def crop_highlights_local(
     out_dir: Optional[str] = None,
     output_dir: Optional[str] = None,
     finalize: bool = True,
+    transcript: Optional[Dict] = None,
 ) -> List[Dict]:
     # output_dir is the GUI-facing spelling; when given it wins and its
     # directory is created before any clip is written. Legacy out_dir keeps
@@ -1182,6 +1225,7 @@ def crop_highlights_local(
                 aspect_ratio,
                 out_path,
                 finalize=finalize,
+                transcript=transcript,
             )
             results.append({**h, "clip_url": out_path})
         except Exception as e:

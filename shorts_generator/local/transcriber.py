@@ -235,6 +235,15 @@ def transcribe_local(media_path: str, language: Optional[str] = None) -> Dict:
         "beam_size": 5,
         "condition_on_previous_text": False,
     }
+    # Опционально: word_timestamps задействуем только когда стоят караоке‑
+    # субтитры (CAPTIONS_ENABLED) — лишняя работа whisper'у ни к чему, если
+    # субтитры выключены. Кэш .srt слов не хранит, поэтому при cache hit
+    # сегменты вернутся без "words": мы это просто документируем, ворды
+    # появятся после удаления устаревшего .srt.
+    _want_words = str(env("CAPTIONS_ENABLED", "0") or "").strip().lower() not in (
+        "0", "false", "no", "")
+    if _want_words:
+        transcribe_kwargs["word_timestamps"] = True
     if LOCAL_WHISPER_VAD_FILTER:
         transcribe_kwargs["vad_filter"] = True
         transcribe_kwargs["vad_parameters"] = LOCAL_WHISPER_VAD_PARAMETERS
@@ -252,14 +261,23 @@ def transcribe_local(media_path: str, language: Optional[str] = None) -> Dict:
         compute = "float16" if dev == "cuda" else "int8"
         model = WhisperModel(whisper_model_name, device=dev, compute_type=compute)
         segments_iter, info = model.transcribe(**transcribe_kwargs)
-        drained = [
-            {
+        drained = []
+        for s in segments_iter:
+            seg = {
                 "start": float(s.start),
                 "end": float(s.end),
                 "text": (s.text or "").strip(),
             }
-            for s in segments_iter
-        ]
+            if _want_words:
+                seg["words"] = [
+                    {
+                        "start": float(w.start) if w.start is not None else float(s.start),
+                        "end": float(w.end) if w.end is not None else float(s.end),
+                        "word": w.word,
+                    }
+                    for w in (getattr(s, "words", None) or [])
+                ]
+            drained.append(seg)
         return drained, info
 
     try:

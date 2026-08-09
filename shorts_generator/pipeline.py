@@ -60,9 +60,11 @@ def _run_local(
     # on save (POST /api/shorts/save -> _reframe_vertical with face tracking ->
     # finalize_clip_local for blur/overlay/music), after the user approves a
     # short in the review panel. Saves GPU on rejected clips.
+    # task4: transcript is threaded through so crop_highlights_local can burn
+    # karaoke captions at finalize time without re-transcribing.
     shorts = crop_highlights_local(
         source_path, top, aspect_ratio="16:9", output_dir=shorts_dir,
-        finalize=False,
+        finalize=False, transcript=transcript,
     )
     for short in shorts:
         short["draft_aspect"] = "16:9"          # what the draft was rendered at
