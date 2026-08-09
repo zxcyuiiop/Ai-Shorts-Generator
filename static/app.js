@@ -527,7 +527,13 @@ function renderReview() {
     thumbBtn.className = 'btn-secondary';
     thumbBtn.textContent = '🖼 Обложка';
 
-    actions.append(previewBtn, saveBtn, trimBtn, deleteBtn, thumbBtn);
+    const nextBtn = document.createElement('button');
+    nextBtn.type = 'button';
+    nextBtn.className = 'btn-secondary';
+    nextBtn.textContent = 'Далее';
+    nextBtn.addEventListener('click', () => advanceReview());
+
+    actions.append(previewBtn, saveBtn, nextBtn, trimBtn, deleteBtn, thumbBtn);
 
     saveBtn.addEventListener('click', async () => {
         saveBtn.disabled = true;
@@ -557,6 +563,7 @@ function renderReview() {
             hint.classList.add('review-hint-saved');
             if (!badge.isConnected) meta.append(badge);
             showToast('Клип сохранён в output/saved/', 'success');
+            setTimeout(() => advanceReview(), 1100);
         } catch (e) {
             showToast(e.message || 'Не удалось сохранить клип', 'error');
             saveBtn.disabled = false;
@@ -739,7 +746,7 @@ document.getElementById('music_upload_btn').addEventListener('click', async () =
     btn.disabled = true;
     try {
         const fd = new FormData();
-        fd.append('file', file);
+        fd.append('music', file);
         const resp = await fetch('/api/upload/music', { method: 'POST', body: fd });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok || !data.ok) throw new Error(data.error || `HTTP ${resp.status}`);
