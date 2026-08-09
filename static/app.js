@@ -44,6 +44,7 @@ const SETTING_FIELDS = [
     'overlay_position', 'overlay_margin', 'overlay_scale', 'use_overlay_opencv',
     'overlay_enabled', 'overlay_x', 'overlay_y',
     'silence_cut', 'blur_bars', 'music_enabled', 'music_file', 'music_volume',
+    'captions_enabled', 'caption_style', 'face_track',
 ];
 
 const SECRET_MASK = '••••••••';
@@ -242,6 +243,9 @@ function collectProcessingSettings() {
         music_enabled: !!document.getElementById('music_enabled').checked,
         music_file: document.getElementById('music_file').value || '',
         music_volume: isFinite(volume) ? Math.max(0, Math.min(100, volume)) : 40,
+        captions_enabled: !!document.getElementById('captions_enabled').checked,
+        caption_style: document.getElementById('caption_style').value,
+        face_track: !!document.getElementById('face_track').checked,
     };
 }
 

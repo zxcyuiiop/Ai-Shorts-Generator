@@ -204,6 +204,9 @@ def _worker():
                 music_volume=p["music_volume"],
                 silence_cut=p["silence_cut"],
                 blur_bars=p["blur_bars"],
+                captions_enabled=p["captions_enabled"],
+                caption_style=p["caption_style"],
+                face_track=p["face_track"],
             )
         except Exception:  # background_task already records its own failures
             import traceback
@@ -292,7 +295,8 @@ def _overrides_from(mode, api_keys, whisper_device=None, whisper_model=None,
                     overlay_margin_left=None,
                     overlay_enabled=None, overlay_x=None, overlay_y=None,
                     music_enabled=None, music_file=None, music_volume=None,
-                    silence_cut=None, blur_bars=None):
+                    silence_cut=None, blur_bars=None,
+                    captions_enabled=None, caption_style=None, face_track=None):
     """Translate browser field names into config setting names.
 
     Secrets arrive either as a real value or as the mask placeholder, which means
@@ -376,6 +380,17 @@ def _overrides_from(mode, api_keys, whisper_device=None, whisper_model=None,
     if blur_bars is not None:
         out["BLUR_BARS"] = "1" if _as_bool(blur_bars) else "0"
 
+    # Captions / face-track toggles. Captions are opt-in (clipper/transcriber
+    # default off); face tracking defaults on and is a kill-switch here.
+    if captions_enabled is not None:
+        out["CAPTIONS_ENABLED"] = "1" if _as_bool(captions_enabled) else "0"
+    if caption_style is not None:
+        style = str(caption_style).strip().lower()
+        if style in ("karaoke", "classic"):
+            out["CAPTION_STYLE"] = style
+    if face_track is not None:
+        out["FACE_TRACK_ENABLED"] = "1" if _as_bool(face_track) else "0"
+
     if not api_keys:
         return out
 
@@ -412,7 +427,8 @@ def background_task(job_id, youtube_url, num_clips, aspect_ratio,
                     overlay_margin_left=None,
                     overlay_enabled=None, overlay_x=None, overlay_y=None,
                     music_enabled=None, music_file=None, music_volume=None,
-                    silence_cut=None, blur_bars=None):
+                    silence_cut=None, blur_bars=None,
+                    captions_enabled=None, caption_style=None, face_track=None):
     """Run generate_shorts, streaming its own log output to the browser."""
     from shorts_generator.config import clear_overrides, set_overrides
 
@@ -425,7 +441,8 @@ def background_task(job_id, youtube_url, num_clips, aspect_ratio,
                                       overlay_margin_left,
                                       overlay_enabled, overlay_x, overlay_y,
                                       music_enabled, music_file, music_volume,
-                                      silence_cut, blur_bars))
+                                      silence_cut, blur_bars,
+                                      captions_enabled, caption_style, face_track))
 
         with jobs_lock:
             jobs[job_id]["status"] = "running"
@@ -615,6 +632,10 @@ def generate():
     # Post-processing toggles: cut silences + blurred bars (9:16 only).
     silence_cut = data.get("silence_cut")
     blur_bars = data.get("blur_bars")
+    # Captions (opt-in) + face tracking (defaults on; this is the kill-switch).
+    captions_enabled = data.get("captions_enabled")
+    caption_style = _get("caption_style")
+    face_track = data.get("face_track")
 
     if not youtube_url:
         return jsonify({"error": "Missing URL or file path"}), 400
@@ -651,6 +672,9 @@ def generate():
         "music_volume": music_volume,
         "silence_cut": silence_cut,
         "blur_bars": blur_bars,
+        "captions_enabled": captions_enabled,
+        "caption_style": caption_style,
+        "face_track": face_track,
     }
     with jobs_lock:
         jobs[job_id] = {
@@ -692,6 +716,9 @@ def generate():
         "music_volume": music_volume,
         "silence_cut": silence_cut,
         "blur_bars": blur_bars,
+        "captions_enabled": captions_enabled,
+        "caption_style": caption_style,
+        "face_track": face_track,
         **{k: v for k, v in api_keys.items() if v},
     })
 

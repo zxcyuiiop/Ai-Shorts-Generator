@@ -65,6 +65,10 @@ ALLOWED_FIELDS = SECRET_FIELDS | {
     # Post-processing toggles (silence cut + blurred bars)
     "silence_cut",
     "blur_bars",
+    # Captions (opt-in karaoke/classic subtitles) + face-track kill-switch
+    "captions_enabled",
+    "caption_style",
+    "face_track",
 }
 
 MASK = "••••••••"

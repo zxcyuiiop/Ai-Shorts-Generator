@@ -60,7 +60,7 @@ def _run_local(
     # review panel (POST /api/shorts/finalize). Saves GPU on rejected clips.
     shorts = crop_highlights_local(
         source_path, top, aspect_ratio=aspect_ratio, output_dir=shorts_dir,
-        finalize=False,
+        finalize=False, transcript=transcript,
     )
 
     return {
