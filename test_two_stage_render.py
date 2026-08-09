@@ -7,7 +7,11 @@ Covers:
   - POST /api/shorts/finalize: 200 ok / 400 bad url / 404 missing file /
     500 + draft restored when finalize raises (all with a stubbed finalize_clip_local)
 
-Everything is stubbed: no network, no ffmpeg, no real rendering.
+Hermetic: the settings file and the app's output/upload dirs are redirected
+into a fresh tempdir before app.py is imported; the finalize endpoint's scratch
+clips live inside that tempdir (so _resolve_output_safe accepts them), and the
+per-clip heavy stages are stubbed (no ffmpeg, no network, no real rendering).
+The tempdir is removed on exit.
 """
 import os
 import shutil
@@ -16,16 +20,22 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+_TMP = tempfile.mkdtemp(prefix="two-stage-render-")
+
 from shorts_generator import settings_store  # noqa: E402
 
-# Use a scratch settings file so a real one is never touched.
-settings_store.SETTINGS_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "settings.test.json"
-)
+# Use a scratch settings file inside the tempdir so a real one is never touched.
+settings_store.SETTINGS_PATH = os.path.join(_TMP, "settings.local.json")
 
 from shorts_generator import config as cfg  # noqa: E402
 from shorts_generator.local import clipper as clip  # noqa: E402
 import app as webapp  # noqa: E402
+
+# Point every disk write at the tempdir. app.py reads its module level
+# LOCAL_OUTPUT_DIR / UPLOAD_DIR everywhere, so patch both.
+webapp.LOCAL_OUTPUT_DIR = _TMP
+webapp.UPLOAD_DIR = os.path.join(_TMP, "uploads")
+webapp.MUSIC_UPLOAD_DIR = os.path.join(_TMP, "music")
 
 failures = []
 
@@ -51,7 +61,7 @@ class Recorder:
 
 
 def run_clipper_checks():
-    tmp = tempfile.mkdtemp(prefix="two-stage-render-")
+    tmp = tempfile.mkdtemp(prefix="two-stage-clipper-", dir=_TMP)
     try:
         src = os.path.join(tmp, "source.mp4")
         out_path = os.path.join(tmp, "short_01.mp4")
@@ -59,7 +69,8 @@ def run_clipper_checks():
             f.write(b"fake")
 
         # Keep the real ffmpeg/silence/encoder work out: we only care whether the
-        # finalize stage fires, so every heavy step around it is stubbed.
+        # finalize stage fires, so every heavy step around it is stubbed. Patch
+        # the module attrs that crop_clip_local actually looks up at call time.
         reals = {name: getattr(clip, name) for name in (
             "_cut_subclip", "_reframe_vertical", "finalize_clip_local",
             "_overlay_tiktok", "apply_blur_padding", "mix_music",
@@ -105,7 +116,7 @@ def run_clipper_checks():
             rec = Recorder(fn=lambda *a, **k: a[4])
             clip.crop_clip_local = rec
             clip.crop_highlights_local(src, [{"title": "A", "start_time": 0, "end_time": 5}],
-                                       aspect_ratio="1:1", out_dir=tmp, finalize=False)
+                                       out_dir=tmp, finalize=False)
             ok = len(rec.calls) == 1 and rec.calls[0][1].get("finalize") is False
             check("crop_highlights_local propagates finalize=False", ok, f"calls={rec.calls}")
         finally:
@@ -118,9 +129,9 @@ def run_finalize_endpoint_checks():
     c = webapp.app.test_client()
 
     real = clip.finalize_clip_local
-    # Scratch must live under output/ so _resolve_output_safe can resolve it
-    # (a system temp dir may sit on another drive than the output dir).
-    tmp = tempfile.mkdtemp(prefix="two-stage-finalize-", dir=os.path.abspath(webapp.UPLOAD_DIR))
+    # Scratch must live under the (redirected) output dir so _resolve_output_safe
+    # can resolve it; otherwise the endpoint traversal guard rejects the path.
+    tmp = tempfile.mkdtemp(prefix="two-stage-finalize-", dir=_TMP)
     try:
         # Keep the effects out of ffmpeg but make the failure case visible on disk:
         # the stub denies the draft bytes, so a successful restore is checkable.
@@ -133,7 +144,7 @@ def run_finalize_endpoint_checks():
         clip.finalize_clip_local = stub
 
         # A real draft in the output dir to finalize hermetically.
-        rel = os.path.relpath(tmp, os.path.abspath(webapp.LOCAL_OUTPUT_DIR)).replace("\\", "/")
+        rel = os.path.relpath(tmp, _TMP).replace("\\", "/")
         draft_rel = f"{rel}/draft_01.mp4"
         draft_abs = os.path.join(tmp, "draft_01.mp4")
         with open(draft_abs, "wb") as f:
@@ -183,11 +194,11 @@ def run_finalize_endpoint_checks():
 
 
 def main():
-    run_clipper_checks()
-    run_finalize_endpoint_checks()
-
-    if os.path.exists(settings_store.SETTINGS_PATH):
-        os.remove(settings_store.SETTINGS_PATH)
+    try:
+        run_clipper_checks()
+        run_finalize_endpoint_checks()
+    finally:
+        shutil.rmtree(_TMP, ignore_errors=True)
 
     print()
     if failures:
