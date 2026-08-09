@@ -921,6 +921,9 @@ def job_shorts(job_id):
             "duration_sec": _ffprobe_duration(abs_path),
             # Effects were already baked in if the finalize step left its backup.
             "finalized": os.path.exists(abs_path + ".draft.mp4"),
+            # A clip already approved lives under output/saved/ — mark it so the
+            # review panel keeps its «Сохранено» state across a page reload.
+            "saved": rel == "saved" or rel.startswith("saved/"),
         })
     return jsonify({"shorts": shorts})
 

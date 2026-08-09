@@ -390,7 +390,14 @@ async function fetchShortsForReview(jobId) {
         const resp = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/shorts`);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
-        reviewShorts = (data.shorts || []).map(s => ({ ...s, finalized: !!s.finalized })).filter(s => s.url);
+        reviewShorts = (data.shorts || [])
+            .map(s => ({
+                ...s,
+                finalized: !!s.finalized,
+                // Клип уже утверждён, если лежит в output/saved/.
+                saved: !!s.saved || String(s.url || '').includes('/output/saved/'),
+            }))
+            .filter(s => s.url);
         if (!reviewShorts.length) return;
         reviewIndex = 0;
         openReview();
@@ -411,6 +418,10 @@ function closeReview() {
     reviewSection.classList.add('hidden');
     reviewDone.classList.add('hidden');
     reviewBody.innerHTML = '';
+    // Сбрасываем локальный слепок: при повторном открытии список тянется
+    // заново с сервера, чтобы карточки не висели с устаревшим url/saved.
+    reviewShorts = [];
+    reviewIndex = 0;
 }
 
 function formatDuration(sec) {
@@ -437,9 +448,13 @@ function renderReview() {
     if (short.size_bytes != null) parts.push(formatBytes(short.size_bytes));
     if (short.duration_sec != null) parts.push(formatDuration(short.duration_sec));
     details.textContent = parts.join(' · ');
-    meta.append(title, details);
+    const badge = document.createElement('span');
+    badge.className = 'saved-badge';
+    badge.textContent = 'Сохранено';
+    if (short.saved) meta.append(title, details, badge); else meta.append(title, details);
 
     const videoWrap = document.createElement('div');
+    videoWrap.className = 'review-videowrap';
     const video = document.createElement('video');
     video.className = 'review-video';
     video.controls = true;
@@ -450,55 +465,73 @@ function renderReview() {
     const actions = document.createElement('div');
     actions.className = 'review-actions';
 
+    // Черновик пока без эффекта и в исходной горизонтальной разметке.
+    const hint = document.createElement('p');
+    hint.className = 'review-hint';
+    hint.textContent = 'Черновик в исходном кадре (16:9), без эффектов — рефрейм под вертикаль и эффекты применятся при сохранении.';
+
+    // Превью: схлопывает controls-конфликт, просто toggle play/pause.
+    const previewBtn = document.createElement('button');
+    previewBtn.type = 'button';
+    previewBtn.className = 'btn-secondary';
+    previewBtn.textContent = 'Превью';
+    previewBtn.addEventListener('click', () => {
+        if (video.paused) { video.play().catch(() => {}); previewBtn.textContent = 'Пауза'; }
+        else { video.pause(); previewBtn.textContent = 'Превью'; }
+    });
+    video.addEventListener('play', () => { previewBtn.textContent = 'Пауза'; });
+    video.addEventListener('pause', () => { previewBtn.textContent = 'Превью'; });
+
     const saveBtn = document.createElement('button');
     saveBtn.type = 'button';
     saveBtn.className = 'btn-primary';
-    saveBtn.textContent = 'Сохранить';
-    saveBtn.addEventListener('click', () => {
-        showToast('Клип сохранён', 'success');
-        advanceReview();
-    });
-
-    const deleteBtn = document.createElement('button');
-    deleteBtn.type = 'button';
-    deleteBtn.className = 'btn-secondary btn-danger';
-    deleteBtn.textContent = 'Удалить';
+    saveBtn.textContent = '💾 Сохранить';
+    saveBtn.disabled = !!short.saved;
 
     const trimBtn = document.createElement('button');
     trimBtn.type = 'button';
     trimBtn.className = 'btn-secondary';
     trimBtn.textContent = 'Обрезать';
 
-    const finalizeBtn = document.createElement('button');
-    finalizeBtn.type = 'button';
-    finalizeBtn.className = 'btn-secondary';
-    finalizeBtn.textContent = short.finalized ? 'С эффектами' : 'Применить эффекты';
-    finalizeBtn.disabled = !!short.finalized;
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'btn-secondary btn-danger';
+    deleteBtn.textContent = 'Удалить';
 
-    actions.append(saveBtn, deleteBtn, trimBtn, finalizeBtn);
+    actions.append(previewBtn, saveBtn, trimBtn, deleteBtn);
 
-    finalizeBtn.addEventListener('click', async () => {
-        finalizeBtn.disabled = true;
-        const originalText = finalizeBtn.textContent;
-        finalizeBtn.innerHTML = '<span class="btn-spinner"></span> Применяю...';
+    saveBtn.addEventListener('click', async () => {
+        saveBtn.disabled = true;
+        const originalText = saveBtn.textContent;
+        saveBtn.innerHTML = '<span class="btn-spinner"></span> Сохраняю...';
         try {
-            const resp = await fetch('/api/shorts/finalize', {
+            const resp = await fetch('/api/shorts/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ url: short.url }),
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || !data.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+            short.saved = true;
             short.finalized = true;
-            const sep = short.url.includes('?') ? '&' : '?';
-            video.src = `${short.url}${sep}t=${Date.now()}`;
-            video.load();
-            finalizeBtn.textContent = 'С эффектами';
-            showToast('Эффекты применены', 'success');
+            if (data.url) {
+                short.url = data.url;
+                const sep = short.url.includes('?') ? '&' : '?';
+                video.src = `${short.url}${sep}t=${Date.now()}`;
+                video.load();
+            }
+            if (data.aspect_ratio && /^\s*9\s*:\s*16/.test(data.aspect_ratio)) {
+                video.classList.add('review-video-vertical');
+            }
+            saveBtn.textContent = '💾 Сохранено';
+            hint.textContent = 'Сохранено в output/saved/ — рефрейм и эффекты применены.';
+            hint.classList.add('review-hint-saved');
+            if (!badge.isConnected) meta.append(badge);
+            showToast('Клип сохранён в output/saved/', 'success');
         } catch (e) {
-            showToast(e.message || 'Не удалось применить эффекты', 'error');
-            finalizeBtn.disabled = false;
-            finalizeBtn.textContent = originalText;
+            showToast(e.message || 'Не удалось сохранить клип', 'error');
+            saveBtn.disabled = false;
+            saveBtn.textContent = originalText;
         }
     });
 
@@ -525,7 +558,7 @@ function renderReview() {
         trim.wrap.classList.toggle('hidden');
     });
 
-    reviewBody.append(meta, videoWrap, actions, trim.wrap);
+    reviewBody.append(meta, videoWrap, actions, hint, trim.wrap);
 }
 
 function buildTrimForm(short, video) {
