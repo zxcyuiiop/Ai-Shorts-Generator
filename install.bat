@@ -55,6 +55,12 @@ if errorlevel 1 (
     if errorlevel 1 goto :pip_fail
 )
 
+REM YouTube blocks outdated yt-dlp builds with "Sign in to confirm you're not a
+REM bot" -- always pull the newest one so the downloader stays current.
+echo.
+echo Updating yt-dlp to the latest release...
+!VPY! -m pip install --upgrade yt-dlp
+
 REM --- 4. .env ---
 if not exist .env (
     if exist .env.example (

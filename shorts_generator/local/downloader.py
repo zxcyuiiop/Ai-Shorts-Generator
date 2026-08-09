@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 from typing import Optional
 
-from ..config import LOCAL_OUTPUT_DIR
+from ..config import LOCAL_OUTPUT_DIR, env
 
 # Populated after each successful (or cached) download so the pipeline can
 # learn the video title / chosen format without changing the return signature.
@@ -299,6 +299,49 @@ def _locate_download_file(ydl, info: dict, out_dir: str, pre_download: Optional[
     return None
 
 
+_BOT_MARKERS = (
+    "sign in", "bot", "confirm you", "cookies-from-browser",
+    "please log in", "403", "forbidden",
+)
+
+
+def _cookie_opts() -> dict:
+    """Resolve YTDLP_COOKIES / YTDLP_COOKIES_FROM_BROWSER to yt-dlp kwargs.
+
+    Returns {} when neither is set -- the default anonymous journey is the
+    normal path, cookies are an opt-in for users YouTube challenges.
+    """
+    cfb = str(env("YTDLP_COOKIES_FROM_BROWSER") or "").strip()
+    if cfb:
+        parts = [p.strip() for p in cfb.split(",") if p.strip()]
+        if parts:
+            return {"cookiesfrombrowser": (parts[0], *parts[1:])}
+    cookies = str(env("YTDLP_COOKIES") or "").strip()
+    if cookies:
+        return {"cookiefile": cookies}
+    return {}
+
+
+def _wrap_bot_error(exc: BaseException) -> BaseException:
+    """Rephrase yt-dlp's anti-bot 403 into an actionable message."""
+    text = str(exc)
+    low = text.lower()
+    if any(m in low for m in _BOT_MARKERS):
+        return RuntimeError(
+            "YouTube rejected the anonymous request (it wants proof you are not "
+            "a bot). Ways to unblock:\n"
+            "  1) Add YTDLP_COOKIES_FROM_BROWSER=chrome (or chromium / firefox / "
+            "edge / brave) to your .env. yt-dlp then reads the session straight "
+            "from that browser -- CLOSE the browser fully before retrying.\n"
+            "  2) Or export cookies with the 'Get cookies.txt LOCALLY' browser "
+            "extension and set YTDLP_COOKIES=C:\\path\\to\\cookies.txt in .env.\n"
+            "  3) Or download the video yourself and pick it via the GUI's "
+            "'Local file' field -- YouTube is never contacted that way.\n"
+            f"Original yt-dlp error: {text}"
+        )
+    return exc
+
+
 def download_youtube_local(video_url: str, fmt: str = "720", out_dir: Optional[str] = None) -> str:
     """Download a remote URL or return a local file path unchanged."""
     local_path = _resolve_local_path(video_url)
@@ -361,13 +404,24 @@ def download_youtube_local(video_url: str, fmt: str = "720", out_dir: Optional[s
     except OSError:
         pass
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(video_url, download=True)
-        # Robustly find the downloaded file: dont trust prepare_filename alone,
-        # because merge_output_format and inconsistent "id"/"ext" metadata
-        # (e.g. some extractors return id="recommended" and ext="NA") can
-        # produce a wrong path like source_recommended.NA.
-        path = _locate_download_file(ydl, info, out_dir, pre_download)
+    # Merge in YouTube-cookie pass-throughs so configs that "unblock" a blocked
+    # IP/profile are confined to the download step.
+    opts = {**ydl_opts, **_cookie_opts()}
+    if opts.get("cookiefile") or opts.get("cookiesfrombrowser"):
+        print(
+            "[download/local] using YouTube cookies "
+            f"({('browser profile: ' + ','.join(opts['cookiesfrombrowser'])) if 'cookiesfrombrowser' in opts else opts.get('cookiefile')})",
+            flush=True,
+        )
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(video_url, download=True)
+            # Robustly find the downloaded file: dont trust prepare_filename alone,
+            # because merge_output_format and inconsistent "id"/"ext" metadata
+            # (e.g. some extractors return id="recommended" and ext="NA") can
+            # produce a wrong path like source_recommended.NA.
+            path = _locate_download_file(ydl, info, out_dir, pre_download)
         if not path or not os.path.exists(path):
             # Last-ditch: pick newest media file in out_dir.
             candidates = [
@@ -393,6 +447,8 @@ def download_youtube_local(video_url: str, fmt: str = "720", out_dir: Optional[s
                 f"info_id={info.get('id')!r}, info_ext={info.get('ext')!r}, "
                 f"new_files={new_files!r}"
             )
+    except Exception as e:
+        raise _wrap_bot_error(e) from e
 
     summary = _chosen_format_summary(info or {})
     print(f"[download/local] format: {summary}", flush=True)

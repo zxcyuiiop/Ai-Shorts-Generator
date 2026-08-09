@@ -55,6 +55,9 @@ if ! "$VPY" -m pip install -r requirements-local.txt; then
     "$VPY" -m pip install -r requirements.txt
 fi
 
+# Keep yt-dlp current — YouTube changes often break older releases ("Sign in to confirm you're not a bot").
+"$VPY" -m pip install --upgrade yt-dlp
+
 # --- 5. .env ---
 if [ ! -f .env ] && [ -f .env.example ]; then
     echo ""

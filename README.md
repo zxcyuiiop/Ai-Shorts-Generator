@@ -57,6 +57,14 @@ venv/Scripts/python.exe main.py "https://www.youtube.com/watch?v=..." --num-clip
 venv/Scripts/python.exe main.py "https://www.youtube.com/watch?v=..." --mode local --aspect-ratio 9:16
 ```
 
+### "Sign in to confirm you're not a bot"
+
+YouTube sometimes blocks anonymous downloads. Fix it one of three ways (documented in `.env.example`):
+
+- **Browser cookies** — add `YTDLP_COOKIES_FROM_BROWSER=chrome` (or `chromium` / `firefox` / `edge` / `brave`) to `.env`, **fully close that browser**, and retry. yt-dlp will read the session directly.
+- **Cookies file** — export cookies with the "Get cookies.txt LOCALLY" browser extension and set `YTDLP_COOKIES=C:\path\to\cookies.txt` in `.env`.
+- **Skip YouTube** — download the video yourself and pick it via the "Local file" field in the GUI; the pipeline then never talks to YouTube.
+
 ## Configuration
 
 Copy `.env.example` to `.env` and fill in the keys you need. All effects (blur, watermark, music, captions, thumbnails) are env-gated and documented there; per-request overrides are also exposed in the GUI settings panel (`settings.local.json`).
