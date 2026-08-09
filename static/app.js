@@ -475,7 +475,14 @@ function renderReview() {
     finalizeBtn.textContent = short.finalized ? 'С эффектами' : 'Применить эффекты';
     finalizeBtn.disabled = !!short.finalized;
 
-    actions.append(saveBtn, deleteBtn, trimBtn, finalizeBtn);
+    // Cover is generated on demand only — a frame grab per card unconditionally
+    // would cost the user ffmpeg runs on clips they might reject anyway.
+    const thumbBtn = document.createElement('button');
+    thumbBtn.type = 'button';
+    thumbBtn.className = 'btn-secondary';
+    thumbBtn.textContent = '🖼 Обложка';
+
+    actions.append(saveBtn, deleteBtn, trimBtn, finalizeBtn, thumbBtn);
 
     finalizeBtn.addEventListener('click', async () => {
         finalizeBtn.disabled = true;
@@ -525,7 +532,44 @@ function renderReview() {
         trim.wrap.classList.toggle('hidden');
     });
 
-    reviewBody.append(meta, videoWrap, actions, trim.wrap);
+    const thumbWrap = document.createElement('div');
+    thumbWrap.className = 'review-thumbnail hidden';
+
+    thumbBtn.addEventListener('click', async () => {
+        thumbBtn.disabled = true;
+        const originalText = thumbBtn.textContent;
+        thumbBtn.innerHTML = '<span class="btn-spinner"></span> Делаю...';
+        try {
+            const resp = await fetch('/api/shorts/thumbnail', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: short.url, title: short.name }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || !data.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+            thumbWrap.innerHTML = '';
+            const img = document.createElement('img');
+            img.className = 'review-thumbnail-img';
+            img.alt = 'Обложка';
+            img.src = `${data.url}${data.url.includes('?') ? '&' : '?'}t=${Date.now()}`;
+            const link = document.createElement('a');
+            link.className = 'review-thumbnail-link';
+            link.href = data.url;
+            link.download = '';
+            link.textContent = '⬇ Скачать обложку';
+            thumbWrap.append(img, link);
+            thumbWrap.classList.remove('hidden');
+            showToast('Обложка готова', 'success');
+            thumbBtn.textContent = originalText;
+        } catch (e) {
+            showToast(e.message || 'Не удалось создать обложку', 'error');
+            thumbBtn.textContent = originalText;
+        } finally {
+            thumbBtn.disabled = false;
+        }
+    });
+
+    reviewBody.append(meta, videoWrap, actions, trim.wrap, thumbWrap);
 }
 
 function buildTrimForm(short, video) {
