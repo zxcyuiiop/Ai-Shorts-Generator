@@ -4,16 +4,44 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI YouTube Shorts Generator</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+    <script>
+        // Anti-FOUC: resolve the theme before first paint.
+        (function () {
+            try {
+                var t = localStorage.getItem('theme');
+                if (!t) t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+                document.documentElement.dataset.theme = t;
+            } catch (e) {
+                document.documentElement.dataset.theme = 'dark';
+            }
+        })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
     <div class="container">
         <header>
             <div class="header-text">
-                <h1>🎬 AI YouTube Shorts Generator</h1>
+                <h1>AI YouTube Shorts Generator</h1>
                 <p>Превращайте длинные YouTube-видео в вирусные шорты с помощью ИИ</p>
             </div>
-            <button id="save-settings-btn" class="btn-secondary" type="button">Сохранить настройки</button>
+            <div class="header-actions">
+                <button id="theme-toggle" class="btn-secondary theme-toggle" type="button"
+                        aria-label="Переключить тему" title="Переключить тему">
+                    <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle cx="12" cy="12" r="4.2"></circle>
+                        <path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M19.1 4.9l-1.6 1.6M6.5 17.5l-1.6 1.6"></path>
+                    </svg>
+                    <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M20.2 14.2A8.2 8.2 0 0 1 9.8 3.8a8.2 8.2 0 1 0 10.4 10.4Z"></path>
+                    </svg>
+                </button>
+                <button id="save-settings-btn" class="btn-secondary" type="button">Сохранить настройки</button>
+            </div>
         </header>
 
         <main>
@@ -356,6 +384,7 @@
                         <h2>Обработка…</h2>
                         <span id="elapsed-timer" class="elapsed-timer">0:00</span>
                     </div>
+                    <ol id="stage-tracker" class="stage-tracker" aria-label="Этапы обработки"></ol>
                     <div class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Прогресс обработки">
                         <div id="progress-fill" class="progress-fill"></div>
                     </div>
@@ -615,6 +644,7 @@
                 });
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 if (window.showToast) window.showToast('Настройки сохранены', 'success');
+                if (window.markSettingsSaved) window.markSettingsSaved();
                 btn.textContent = 'Сохранено';
                 setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1500);
             } catch (e) {
