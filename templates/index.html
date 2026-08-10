@@ -29,6 +29,7 @@
                     <button id="add-to-queue-btn" class="btn-secondary" type="button">Добавить в очередь</button>
                     <button type="submit" form="generate-form" id="generate-btn" class="btn-primary">Сгенерировать шорты</button>
                 </div>
+                <div id="queue-empty" class="queue-empty hidden">Очередь пуста — добавьте ссылку выше</div>
                 <div id="queue-list" class="queue-list hidden"></div>
             </div>
 
@@ -80,6 +81,7 @@
                         <span class="toggle-icon">▼</span>
                     </summary>
                     <div class="section-content" id="api-keys">
+                        <p class="form-hint settings-note">Настройки сохраняются на сервере (settings.local.json)</p>
                         <div class="api-group" id="muapi-group">
                             <label>MuAPI (режим API)</label>
                             <input type="password" id="muapi_key" placeholder="Введите ключ MuAPI">
@@ -354,7 +356,7 @@
                         <h2>Обработка…</h2>
                         <span id="elapsed-timer" class="elapsed-timer">0:00</span>
                     </div>
-                    <div class="progress-bar">
+                    <div class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Прогресс обработки">
                         <div id="progress-fill" class="progress-fill"></div>
                     </div>
                     <p id="progress-stage" class="progress-stage">Запуск…</p>
@@ -367,8 +369,8 @@
             </div>
 
             <!-- ===== Review panel ===== -->
-            <div id="review-section" class="hidden">
-                <div class="review-card">
+            <div id="review-section" class="hidden" role="region" aria-label="Проверка шортов">
+                <div class="review-card" tabindex="-1">
                     <div class="review-header">
                         <h2>Проверка шортов</h2>
                         <span id="review-counter" class="results-summary"></span>
@@ -377,6 +379,7 @@
                     <div id="review-done" class="review-done hidden">
                         <h3>Проверка завершена</h3>
                         <p>Все клипы просмотрены.</p>
+                        <button type="button" id="review-download-all-btn" class="btn-primary">Скачать все</button>
                         <button type="button" id="review-close-btn" class="btn-secondary">Закрыть</button>
                     </div>
                 </div>

@@ -50,23 +50,83 @@ const SETTING_FIELDS = [
 
 const SECRET_MASK = '••••••••';
 
+// Secret fields whose placeholder turns into a mask hint once a key is stored
+// server-side (value stays empty so nothing readable reaches the DOM).
+const SECRET_FIELDS = new Set(['muapi_key', 'openai_key', 'gemini_key', 'nim_key']);
+
 let timerHandle = null;
 let activeJobId = null;          // job whose SSE stream is being followed
 const polledJobs = {};           // job_id -> latest /api/jobs status snapshot
 let firstQueuePollDone = false;
+let lastKnownQueueSize = 0;      // пустая очередь -> нечего подтверждать
+let processingInFlight = false;  // пока true: обе кнопки запуска заблокированы
+let serverOffline = false;       // тост о потере связи показываем один раз
+let restoredEventSource = null;
+let uploadProgress = null;       // span внутри generate-btn, создаётся при первой загрузке
 
 // ---------- Toasts ----------
-function showToast(message, type = 'info', ms = 3500) {
+// У ошибок время жизни длиннее, и у каждого тоста есть кнопка закрытия --
+// автоскрытие не должно уносить текст ошибки раньше, чем её прочитали.
+function showToast(message, type = 'info', ms = null) {
     const root = document.getElementById('toast-root');
     if (!root) { console.log(`[${type}] ${message}`); return; }
+    const timeout = ms || (type === 'error' ? 6000 : 3500);
     const el = document.createElement('div');
     el.className = `toast toast-${type}`;
-    el.textContent = message;
+    const text = document.createElement('span');
+    text.className = 'toast-text';
+    text.textContent = message;
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'toast-close';
+    closeBtn.setAttribute('aria-label', 'Закрыть');
+    closeBtn.textContent = '×';
+    const dismiss = () => {
+        el.remove();
+    };
+    closeBtn.addEventListener('click', dismiss);
+    el.append(text, closeBtn);
     root.appendChild(el);
-    setTimeout(() => el.classList.add('toast-out'), Math.max(0, ms - 300));
-    setTimeout(() => el.remove(), ms);
+    setTimeout(() => el.classList.add('toast-out'), Math.max(0, timeout - 300));
+    setTimeout(dismiss, timeout);
 }
 window.showToast = showToast;
+
+// Тост о потере связи должен появиться на переходе ok -> fail, а не спамить
+// при каждой неудачной попытке; на успехе флаг сбрасывается.
+function reportServerConnection(ok) {
+    if (ok) {
+        serverOffline = false;
+        return;
+    }
+    if (!serverOffline) {
+        serverOffline = true;
+        showToast('Нет связи с сервером — повторная попытка…', 'error', 6000);
+    }
+}
+
+// Единая точка отрисовки этапа и процента: текст "Этап — 34%", ширина полосы
+// и aria-valuenow для скринридеров.
+function setProgress(percent, stageText) {
+    const stage = stageText || '';
+    progressStage.textContent = (typeof percent === 'number')
+        ? `${stage.replace(/[…\s]+$/, '')} — ${Math.round(percent)}%`
+        : stage;
+    if (typeof percent === 'number') {
+        progressFill.style.width = `${percent}%`;
+        const bar = progressFill.closest('.progress-bar');
+        if (bar) bar.setAttribute('aria-valuenow', String(Math.round(percent)));
+    }
+}
+
+// Пока задача обрабатывается, обе кнопки запуска глушим — иначе легко
+// стартовать дубликат той же очереди.
+function setProcessingUI(inFlight) {
+    processingInFlight = inFlight;
+    submitBtn.disabled = inFlight;
+    const queueBtn = document.getElementById('add-to-queue-btn');
+    if (queueBtn) queueBtn.disabled = inFlight;
+}
 
 function formatElapsed(seconds) {
     const total = Math.max(0, Math.floor(seconds));
@@ -174,6 +234,12 @@ async function restoreSettings() {
     for (const field of SETTING_FIELDS) {
         const el = document.getElementById(field);
         if (!el || saved[field] === undefined || saved[field] === '') continue;
+        if (SECRET_FIELDS.has(field) && saved[field] === SECRET_MASK) {
+            // Настоящий ключ живёт только на сервере: в DOM кладём пустое
+            // значение, а о сохранённости сигнализируем masked-плейсхолдером.
+            el.placeholder = `${SECRET_MASK} (сохранено)`;
+            continue;
+        }
         applyFieldValue(el, saved[field]);
     }
     applyOverlaySettings(saved);
@@ -197,6 +263,28 @@ function applyFieldValue(el, value) {
     }
 }
 
+// Загрузка с прогрессом: fetch не отдаёт upload progress, поэтому XHR.
+// Возвращает body ответа как JSON; ошибки бросает наружу.
+function uploadFileWithProgress(endpoint, formData, onProgress) {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', endpoint);
+        xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable && onProgress) {
+                onProgress(Math.round((e.loaded / e.total) * 100));
+            }
+        };
+        xhr.onload = () => {
+            let data = {};
+            try { data = JSON.parse(xhr.responseText); } catch {}
+            if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+            else reject(new Error(data.error || `Upload failed (HTTP ${xhr.status})`));
+        };
+        xhr.onerror = () => reject(new Error('Upload failed (network error)'));
+        xhr.send(formData);
+    });
+}
+
 // Resolve which source the run uses: a picked local file wins over the queue
 // URL (the file lands under output/uploads/, and its path is sent as `url`
 // with source_type='file' -- the same contract /api/generate already speaks).
@@ -206,15 +294,53 @@ async function resolveSource() {
     if (file) {
         const fd = new FormData();
         fd.append('video', file);
-        const resp = await fetch('/api/upload', { method: 'POST', body: fd });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.error || `Upload failed (HTTP ${resp.status})`);
+        let data;
+        try {
+            if (!uploadProgress) {
+                uploadProgress = document.createElement('span');
+                uploadProgress.className = 'upload-progress hidden';
+                uploadProgress.setAttribute('aria-live', 'polite');
+                submitBtn.appendChild(uploadProgress);
+            }
+            uploadProgress.classList.remove('hidden');
+            // Пока файл летит на сервер, на кнопке виден процент — иначе
+            // большие файлы выглядят как зависшая страница.
+            data = await uploadFileWithProgress('/api/upload', fd, (pct) => {
+                uploadProgress.textContent = `Загрузка ${pct}%`;
+            });
+        } catch (e) {
+            // Если XHR-путь неожиданно упал, не теряем загрузку целиком.
+            if (!(e instanceof TypeError) && !/network error/i.test(e.message)) {
+                uploadProgress && uploadProgress.classList.add('hidden');
+                throw e;
+            }
+            uploadProgress && uploadProgress.classList.add('hidden');
+            const resp = await fetch('/api/upload', { method: 'POST', body: fd });
+            data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.error || `Upload failed (HTTP ${resp.status})`);
+        }
+        uploadProgress && uploadProgress.classList.add('hidden');
         fileInput.value = '';
         return { url: data.path, source_type: 'file' };
     }
     const url = (queueUrlInput.value || '').trim();
     if (!url) throw new Error('Введите YouTube URL или выберите локальный файл.');
     return { url, source_type: 'url' };
+}
+
+// Clamp с пользовательской обратной связью: выход за min/max тихо исправляем,
+// но сообщаем — значения вида "-5 клипов" не должны уезжать на сервер.
+function clampNumberInput(id, min, max) {
+    const el = document.getElementById(id);
+    if (!el) return null;
+    const n = parseInt(el.value, 10);
+    if (!isFinite(n)) return null;
+    const clamped = Math.max(min, Math.min(max, n));
+    if (clamped !== n) {
+        el.value = String(clamped);
+        showToast(`Скорректировано: допустимо ${min}–${max}`, 'info');
+    }
+    return clamped;
 }
 
 function collectApiKeys(mode, provider) {
@@ -244,7 +370,7 @@ function collectOverlaySettings() {
     const y = parseFloat(yRaw);
     return {
         overlay_position: document.getElementById('overlay_position').value,
-        overlay_margin: document.getElementById('overlay_margin').value,
+        overlay_margin: String(clampNumberInput('overlay_margin', 0, 200) ?? 0),
         overlay_scale: document.getElementById('overlay_scale').value,
         use_overlay_opencv: document.getElementById('use_overlay_opencv').checked ? '1' : '0',
         overlay_enabled: !!document.getElementById('overlay_enabled').checked,
@@ -257,22 +383,21 @@ function collectProcessingSettings() {
     // silence_cut / blur_bars are sent for forward compatibility: the generate
     // endpoint ignores them until the backend plumbing lands, but save-settings
     // already persists them.
-    const volume = parseInt(document.getElementById('music_volume').value, 10);
+    const volume = clampNumberInput('music_volume', 0, 100);
     // Empty margin box -> null ("use the backend default") rather than 0.
     const marginRaw = document.getElementById('caption_margin_v').value;
-    const margin = parseInt(marginRaw, 10);
+    const margin = marginRaw === '' ? null : clampNumberInput('caption_margin_v', 0, 1200);
     return {
         silence_cut: !!document.getElementById('silence_cut').checked,
         blur_bars: !!document.getElementById('blur_bars').checked,
         music_enabled: !!document.getElementById('music_enabled').checked,
         music_file: document.getElementById('music_file').value || '',
-        music_volume: isFinite(volume) ? Math.max(0, Math.min(100, volume)) : 40,
+        music_volume: (volume != null) ? volume : 40,
         captions_enabled: !!document.getElementById('captions_enabled').checked,
         caption_style: document.getElementById('caption_style').value,
         face_track: !!document.getElementById('face_track').checked,
         caption_position: document.getElementById('caption_position').value,
-        caption_margin_v: (marginRaw !== '' && isFinite(margin))
-            ? Math.max(0, Math.min(1200, margin)) : null,
+        caption_margin_v: margin,
     };
 }
 
@@ -292,7 +417,8 @@ function updateMusicFileLabel() {
 async function pollQueue() {
     try {
         const resp = await fetch('/api/jobs');
-        if (!resp.ok) return;
+        if (!resp.ok) { reportServerConnection(false); return; }
+        reportServerConnection(true);
         const data = await resp.json();
         const jobs = (data.jobs || []).slice().sort((a, b) => (a.position || 0) - (b.position || 0));
         for (const job of jobs) polledJobs[job.job_id] = job;
@@ -306,7 +432,8 @@ async function pollQueue() {
         }
         firstQueuePollDone = true;
     } catch (e) {
-        // Queue polling failing silently is fine -- it is a nice-to-have.
+        // Сама очередь — nice-to-have, но потерю связи показать надо.
+        reportServerConnection(false);
     }
 }
 
@@ -324,11 +451,15 @@ function jobProgress(job) {
 }
 
 function renderQueue(jobs) {
+    lastKnownQueueSize = jobs.length;
+    const emptyState = document.getElementById('queue-empty');
     if (!jobs.length) {
         queueList.classList.add('hidden');
         queueList.innerHTML = '';
+        if (emptyState) emptyState.classList.remove('hidden');
         return;
     }
+    if (emptyState) emptyState.classList.add('hidden');
     queueList.classList.remove('hidden');
     queueList.innerHTML = '';
 
@@ -373,7 +504,7 @@ async function addToQueue(url) {
         source_type: 'url',
         mode,
         llm_provider: provider,
-        num_clips: parseInt(document.getElementById('num_clips').value, 10),
+        num_clips: clampNumberInput('num_clips', 1, 10) ?? 3,
         clip_length: document.getElementById('clip_length').value,
         aspect_ratio: document.getElementById('aspect_ratio').value,
         format: document.getElementById('format').value,
@@ -443,6 +574,10 @@ function openReview() {
     reviewDone.classList.add('hidden');
     reviewBody.classList.remove('hidden');
     renderReview();
+    // Переносим фокус на карточку: иначе после автоматического открытия
+    // ревью клавиатурный пользователь остаётся в другом конце страницы.
+    const card = reviewSection.querySelector('.review-card');
+    if (card) card.focus();
 }
 
 function closeReview() {
@@ -581,6 +716,8 @@ function renderReview() {
     });
 
     deleteBtn.addEventListener('click', async () => {
+        // Восстановить клип после удаления нельзя — спрашиваем явно.
+        if (!window.confirm('Удалить клип без возможности восстановить?')) return;
         deleteBtn.disabled = true;
         try {
             const resp = await fetch('/api/shorts/delete', {
@@ -739,10 +876,17 @@ function wireClick(id, handler) {
     el.addEventListener('click', handler);
 }
 
-document.getElementById('mode').addEventListener('change', updateVisibleApiGroups);
-document.getElementById('llm_provider').addEventListener('change', updateVisibleApiGroups);
+function wireChange(id, handler) {
+    const el = document.getElementById(id);
+    if (!el) { console.error(`wireChange: #${id} not found`); return; }
+    el.addEventListener('change', handler);
+}
 
-document.getElementById('add-to-queue-btn').addEventListener('click', () => {
+wireChange('mode', updateVisibleApiGroups);
+wireChange('llm_provider', updateVisibleApiGroups);
+
+wireClick('add-to-queue-btn', () => {
+    if (processingInFlight) { showToast('Дождитесь завершения текущей задачи', 'info'); return; }
     const url = (queueUrlInput.value || '').trim();
     if (!url) { showToast('Введите URL видео', 'error'); return; }
     addToQueue(url);
@@ -755,6 +899,52 @@ queueUrlInput.addEventListener('keydown', (e) => {
     }
 });
 wireClick('review-close-btn', closeReview);
+wireClick('review-download-all-btn', downloadAllSaved);
+
+// Скачиваем все сохранённые клипы серией скрытых ссылок с download-атрибутом.
+// Без Promise.all по fetch: браузер всё равно режет параллельные скачивания,
+// а ссылки с паузой достаточно для десятка роликов.
+function downloadAllSaved() {
+    const saved = reviewShorts.filter(s => s.saved && s.url);
+    if (!saved.length) { showToast('Сначала сохраните хотя бы один клип', 'info'); return; }
+    saved.forEach((s, i) => {
+        setTimeout(() => {
+            const a = document.createElement('a');
+            a.href = s.url;
+            a.download = s.name || `short_${i + 1}.mp4`;
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        }, i * 400);
+    });
+    showToast(`Скачиваю ${saved.length} клип(ов)…`, 'success');
+}
+
+// Escape закрывает ревью, только когда оно видимо.
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !reviewSection.classList.contains('hidden')) {
+        closeReview();
+    }
+});
+
+// На подтверждение выхода реагируем, только когда есть активная задача --
+// иначе предупреждение бесит без пользы.
+window.addEventListener('beforeunload', (e) => {
+    if (activeJobId || processingInFlight) {
+        e.preventDefault();
+        e.returnValue = 'Задача ещё обрабатывается — результат не появится, если закрыть вкладку.';
+    }
+});
+
+// Клэмпы с обратной связью для числовых полей.
+const CLAMP_FIELDS = [
+    ['num_clips', 1, 10],
+    ['caption_margin_v', 0, 1200],
+    ['overlay_margin', 0, 200],
+    ['music_volume', 0, 100],
+];
+CLAMP_FIELDS.forEach(([id, min, max]) => wireChange(id, () => clampNumberInput(id, min, max)));
 
 // ---------- Processing (silence / blur / music) wiring ----------
 document.getElementById('music_volume').addEventListener('input', updateMusicVolumeLabel);
@@ -781,16 +971,101 @@ wireClick('music_upload_btn', async () => {
     }
 });
 
+function ensureResultsEmptyState() {
+    if (resultsGrid.children.length) return;
+    const empty = document.createElement('div');
+    empty.id = 'results-empty';
+    empty.className = 'results-empty';
+    empty.textContent = 'Нет сохранённых клипов';
+    resultsGrid.appendChild(empty);
+}
+
+// После перезагрузки страницы активная задача живёт на сервере — находим её
+// и снова подключаемся к прогрессу, чтобы экран не выглядел мёртвым.
+async function resumeActiveJob() {
+    try {
+        const resp = await fetch('/api/jobs');
+        if (!resp.ok) return null;
+        const data = await resp.json();
+        const jobs = data.jobs || [];
+        // /api/jobs отдаёт running первым, queued за ним — берём первый активный.
+        return jobs.find(j => j.status === 'running') ||
+               jobs.find(j => j.status === 'queued') || null;
+    } catch {
+        return null;
+    }
+}
+
+function followJobProgress(jobId) {
+    const es = new EventSource(`/api/progress/${jobId}`);
+    restoredEventSource = es;
+    es.onmessage = (event) => {
+        const update = JSON.parse(event.data);
+        if (update.error) {
+            es.close();
+            restoredEventSource = null;
+            finishRun();
+            showError(update.error);
+            return;
+        }
+        if (update.line) appendLog(update.line);
+        const pct = (typeof update.progress === 'number') ? update.progress : null;
+        if (update.stage || pct !== null) {
+            setProgress(pct, stageLabels[update.stage] || update.stage || '');
+        }
+        if (typeof update.elapsed === 'number') {
+            elapsedTimer.textContent = formatElapsed(update.elapsed);
+        }
+        if (update.result) {
+            es.close();
+            restoredEventSource = null;
+            finishRun();
+            displayResults(update.result, update.elapsed);
+            fetchShortsForReview(jobId);
+        }
+    };
+    es.onerror = () => {
+        es.close();
+        restoredEventSource = null;
+        pollStatus(jobId);
+    };
+}
+
 updateVisibleApiGroups();
 updateLocalFileVisibility();
 updateMusicVolumeLabel();
 updateMusicFileLabel();
 restoreSettings();
+ensureResultsEmptyState();
+resumeActiveJob().then((job) => {
+    if (!job) return;
+    activeJobId = job.job_id;
+    progressSection.classList.remove('hidden');
+    resultsSection.classList.add('hidden');
+    errorSection.classList.add('hidden');
+    submitBtn.textContent = 'Обработка…';
+    setProcessingUI(true);
+    setProgress(typeof job.progress === 'number' ? job.progress : null,
+                stageLabels[job.stage] || 'Обработка…');
+    pipelineLog.textContent = '';
+    startTimer(Date.now());
+    followJobProgress(job.job_id);
+    pollQueue();
+});
 pollQueue();
 setInterval(pollQueue, 2500);
 
 form.addEventListener('submit', async (e) => {
     e.preventDefault();
+
+    if (processingInFlight) { showToast('Дождитесь завершения текущей задачи', 'info'); return; }
+
+    // Непустая очередь + отдельная генерация = частый источник дубликатов.
+    // Спрашиваем явно, запустить ли задачу вне очереди.
+    if (lastKnownQueueSize > 0 &&
+        !window.confirm(`В очереди уже ${lastKnownQueueSize} задач. Запустить новую задачу вне очереди?`)) {
+        return;
+    }
 
     const mode = document.getElementById('mode').value;
 
@@ -814,14 +1089,12 @@ form.addEventListener('submit', async (e) => {
         return;
     }
 
-    activeJobId = null;
-    submitBtn.disabled = true;
+    setProcessingUI(true);
     submitBtn.textContent = 'Генерация…';
     resultsSection.classList.add('hidden');
     errorSection.classList.add('hidden');
     progressSection.classList.remove('hidden');
-    progressFill.style.width = '0%';
-    progressStage.textContent = 'Запуск…';
+    setProgress(0, 'Запуск…');
     pipelineLog.textContent = '';
     startTimer(Date.now());
 
@@ -833,7 +1106,7 @@ form.addEventListener('submit', async (e) => {
             source_type,
             mode,
             llm_provider: provider,
-            num_clips: parseInt(document.getElementById('num_clips').value, 10),
+            num_clips: clampNumberInput('num_clips', 1, 10) ?? 3,
             clip_length: document.getElementById('clip_length').value,
             aspect_ratio: document.getElementById('aspect_ratio').value,
             format: document.getElementById('format').value,
@@ -865,18 +1138,15 @@ form.addEventListener('submit', async (e) => {
 
             if (update.error) {
                 eventSource.close();
-                activeJobId = null;
                 finishRun();
                 showError(update.error);
                 return;
             }
 
             if (update.line) appendLog(update.line);
-            if (typeof update.progress === 'number') {
-                progressFill.style.width = `${update.progress}%`;
-            }
-            if (update.stage) {
-                progressStage.textContent = stageLabels[update.stage] || update.stage;
+            const pct = (typeof update.progress === 'number') ? update.progress : null;
+            if (update.stage || pct !== null) {
+                setProgress(pct, stageLabels[update.stage] || update.stage || '');
             }
             if (typeof update.elapsed === 'number') {
                 elapsedTimer.textContent = formatElapsed(update.elapsed);
@@ -895,21 +1165,23 @@ form.addEventListener('submit', async (e) => {
             pollStatus(job_id);
         };
     } catch (error) {
-        activeJobId = null;
         finishRun();
         showError(error.message);
     }
 });
 
 async function pollStatus(jobId) {
+    let failedAttempts = 0;
     for (let attempt = 0; attempt < 60; attempt++) {
         try {
             const response = await fetch(`/api/status/${jobId}`);
-            if (!response.ok) break;
+            if (!response.ok) { failedAttempts += 1; reportServerConnection(false); break; }
+            reportServerConnection(true);
+            failedAttempts = 0;
             const job = await response.json();
 
             if (typeof job.progress === 'number') {
-                progressFill.style.width = `${job.progress}%`;
+                setProgress(job.progress, stageLabels[job.stage] || 'Обработка…');
             }
             if (job.status === 'completed' && job.result) {
                 finishRun();
@@ -918,25 +1190,30 @@ async function pollStatus(jobId) {
                 return;
             }
             if (job.status === 'error') {
-                activeJobId = null;
                 finishRun();
                 showError(job.error || 'Генерация не удалась');
                 return;
             }
         } catch (e) {
             console.error('Poll error:', e);
+            failedAttempts += 1;
+            reportServerConnection(false);
+        }
+        if (failedAttempts > 3) {
+            progressStage.textContent = 'Ожидание ответа сервера…';
         }
         await new Promise(r => setTimeout(r, 2000));
     }
-    activeJobId = null;
     finishRun();
     showError('Потеряно соединение с задачей.');
 }
 
 function finishRun() {
+    activeJobId = null;
     stopTimer();
+    if (restoredEventSource) { restoredEventSource.close(); restoredEventSource = null; }
     progressSection.classList.add('hidden');
-    submitBtn.disabled = false;
+    setProcessingUI(false);
     submitBtn.textContent = 'Сгенерировать шорты';
 }
 
@@ -944,15 +1221,24 @@ function displayResults(result, elapsed) {
     resultsGrid.innerHTML = '';
     resultsSection.classList.remove('hidden');
 
+    const shorts = result.shorts || [];
+    if (!shorts.length) {
+        const empty = document.createElement('div');
+        empty.id = 'results-empty';
+        empty.className = 'results-empty';
+        empty.textContent = 'Нет сохранённых клипов';
+        resultsGrid.appendChild(empty);
+    }
+
     const summary = document.getElementById('results-summary');
     if (summary) {
-        const count = (result.shorts || []).length;
+        const count = shorts.length;
         summary.textContent = elapsed
             ? `${count} клип${count === 1 ? '' : 'ов'} за ${formatElapsed(elapsed)}`
             : `${count} клип${count === 1 ? '' : 'ов'}`;
     }
 
-    (result.shorts || []).forEach((short, index) => {
+    shorts.forEach((short, index) => {
         const card = document.createElement('div');
         card.className = 'result-card';
 

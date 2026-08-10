@@ -44,12 +44,14 @@ def webapp_check_js(source):
     """True when node exists and accepts the script (``node --check``)."""
     import subprocess
     try:
-        proc = subprocess.run(["node", "--check", "-"], input=source,
-                              capture_output=True, text=True, timeout=30)
+        # Bytes on stdin: piping str lets the Windows console encoding
+        # (cp1251) reject valid app.js characters like "×" in Russian UI text.
+        proc = subprocess.run(["node", "--check", "-"], input=source.encode("utf-8"),
+                              capture_output=True, timeout=30)
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None  # node not installed -- nothing to assert on
     if proc.returncode != 0:
-        print(proc.stderr.strip()[:300])
+        print(proc.stderr.decode("utf-8", "replace").strip()[:300])
     return proc.returncode == 0
 
 
@@ -116,6 +118,20 @@ def main():
         check("app.js ids exist in template", not missing, ", ".join(missing))
         check("music upload wiring present",
               "music_upload_btn" in js_ids and "/api/upload/music" in app_js)
+
+        # --- wave 2f UX-hardening contract ---
+        for new_id in ("queue-empty", "review-download-all-btn"):
+            check(f"template has #{new_id}", new_id in html_ids)
+        check("review region is labelled",
+              'id="review-section" class="hidden" role="region" aria-label="Проверка шортов"' in html)
+        check("review card is focusable",
+              'class="review-card" tabindex="-1"' in html)
+        check("progress bar is a progressbar", 'role="progressbar"' in html)
+        check("toast close button wired", 'className = \'toast-close\'' in app_js)
+        check("delete confirmation wired",
+              'confirm(\'Удалить клип без возможности восстановить?\')' in app_js)
+        check("queue duplicate confirm wired",
+              'Запустить новую задачу вне очереди?' in app_js)
 
         # --- settings round-trip ---
         check("GET /api/settings empty at first", c.get("/api/settings").get_json() == {})
