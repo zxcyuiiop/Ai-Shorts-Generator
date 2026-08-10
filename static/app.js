@@ -559,14 +559,14 @@ async function fetchShortsForReview(jobId) {
         const resp = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/shorts`);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
-        reviewShorts = (data.shorts || [])
+        reviewShorts = sortShortsForReview((data.shorts || [])
             .map(s => ({
                 ...s,
                 finalized: !!s.finalized,
                 // Клип уже утверждён, если лежит в output/saved/.
                 saved: !!s.saved || String(s.url || '').includes('/output/saved/'),
             }))
-            .filter(s => s.url);
+            .filter(s => s.url));
         if (!reviewShorts.length) return;
         reviewIndex = 0;
         openReview();
@@ -684,7 +684,33 @@ function renderReview() {
     nextBtn.textContent = 'Далее';
     nextBtn.addEventListener('click', () => advanceReview());
 
-    actions.append(previewBtn, saveBtn, nextBtn, trimBtn, deleteBtn, thumbBtn);
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'btn-secondary';
+    copyBtn.textContent = '🔗 Ссылка';
+    copyBtn.title = 'Копировать URL клипа';
+    copyBtn.addEventListener('click', () => copyUrlToClipboard(short.url));
+
+    const rerunBtn = document.createElement('button');
+    rerunBtn.type = 'button';
+    rerunBtn.className = 'btn-secondary';
+    rerunBtn.title = 'Перезапустить с теми же настройками';
+    rerunBtn.textContent = '🔄 Ещё раз';
+    rerunBtn.addEventListener('click', async () => {
+        rerunBtn.disabled = true;
+        try {
+            const resp = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/rerun`, { method: 'POST' });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+            showToast('Задача поставлена в очередь', 'success');
+            pollQueue();
+        } catch (e) {
+            showToast(e.message || 'Не удалось перезапустить', 'error');
+            rerunBtn.disabled = false;
+        }
+    });
+
+    actions.append(previewBtn, saveBtn, nextBtn, trimBtn, deleteBtn, thumbBtn, copyBtn, rerunBtn);
 
     saveBtn.addEventListener('click', async () => {
         saveBtn.disabled = true;
@@ -931,6 +957,38 @@ function downloadAllSaved() {
     showToast(`Скачиваю ${saved.length} клип(ов)…`, 'success');
 }
 
+// Копирует абсолютный URL в буфер обмена.
+async function copyUrlToClipboard(url) {
+    if (!url) return;
+    const full = window.location.origin + url;
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(full);
+        } else {
+            const ta = document.createElement('textarea');
+            ta.value = full;
+            ta.style.position = 'fixed'; ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            ta.remove();
+        }
+        showToast('Ссылка скопирована', 'success', 1500);
+    } catch (e) {
+        showToast('Не удалось скопировать: ' + (e.message || e), 'error');
+    }
+}
+
+// Сортирует ревью-фиды по виральности (лучшие сверху); затем несохранённые первыми.
+function sortShortsForReview(shorts) {
+    return (shorts || []).slice().sort((a, b) => {
+        const sa = (typeof a.score === 'number') ? a.score : -1;
+        const sb = (typeof b.score === 'number') ? b.score : -1;
+        if (sa !== sb) return sb - sa;
+        return (a.saved === b.saved) ? 0 : (a.saved ? 1 : -1);
+    });
+}
+
 // Escape закрывает ревью, только когда оно видимо.
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !reviewSection.classList.contains('hidden')) {
@@ -1023,6 +1081,19 @@ async function resumeLastCompletedJob() {
     }
 }
 
+// ETA: если есть и прогресс, и elapsed — показываем "~Н мин осталось".
+// Без elapsed (queued, старт) — не путаем пользователя молчанием.
+function _setElapsedWithEta(elapsed, progress) {
+    if (typeof elapsed !== 'number') return;
+    let text = formatElapsed(elapsed);
+    if (typeof progress === 'number' && progress > 0 && progress < 100) {
+        const total = elapsed / (progress / 100);
+        const remain = Math.max(0, Math.round(total - elapsed));
+        text += ` · ~${formatElapsed(remain)} осталось`;
+    }
+    elapsedTimer.textContent = text;
+}
+
 function followJobProgress(jobId) {
     const es = new EventSource(`/api/progress/${jobId}`);
     restoredEventSource = es;
@@ -1040,9 +1111,7 @@ function followJobProgress(jobId) {
         if (update.stage || pct !== null) {
             setProgress(pct, stageLabels[update.stage] || update.stage || '');
         }
-        if (typeof update.elapsed === 'number') {
-            elapsedTimer.textContent = formatElapsed(update.elapsed);
-        }
+        _setElapsedWithEta(update.elapsed, pct);
         if (update.result) {
             es.close();
             restoredEventSource = null;
@@ -1185,9 +1254,7 @@ form.addEventListener('submit', async (e) => {
             if (update.stage || pct !== null) {
                 setProgress(pct, stageLabels[update.stage] || update.stage || '');
             }
-            if (typeof update.elapsed === 'number') {
-                elapsedTimer.textContent = formatElapsed(update.elapsed);
-            }
+            _setElapsedWithEta(update.elapsed, pct);
 
             if (update.result) {
                 eventSource.close();

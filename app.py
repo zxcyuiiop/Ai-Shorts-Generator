@@ -1027,8 +1027,6 @@ def generate():
 
 @app.route("/api/jobs")
 def list_jobs():
-    """Queue overview for the UI: running first, then waiting (in order), then
-    finished (newest first)."""
     with jobs_lock:
         snapshot = [(jid, dict(j)) for jid, j in jobs.items()]
 
@@ -1051,6 +1049,46 @@ def list_jobs():
             "has_result": bool(j.get("result")),
         })
     return jsonify({"jobs": out})
+
+
+@app.route("/api/jobs/<job_id>/rerun", methods=["POST"])
+def rerun_job(job_id):
+    """Re-enqueue a job with the exact _params it last ran with.
+
+    The job's settings snapshot is kept under ``_params``; we clone it rather
+    than re-derive from the settings file so a rerun is deterministic.
+    """
+    with jobs_lock:
+        src = jobs.get(job_id)
+        if src is None:
+            return jsonify({"error": "Job not found"}), 404
+        params = dict(src.get("_params") or {})
+        url = src.get("url", "")
+    if not url or not params:
+        return jsonify({"error": "Job has no params snapshot"}), 400
+
+    new_job_id = f"job_{int(time.time() * 1000)}"
+    aspect = (params.get("aspect_ratio") or "9:16").strip() or "9:16"
+    with jobs_lock:
+        jobs[new_job_id] = {
+            "status": "queued",
+            "stage": "queued",
+            "progress": 0,
+            "url": url,
+            "added_at": time.time(),
+            "_queued": True,
+            "started_at": time.time(),
+            "log": [],
+            "aspect_ratio": aspect,
+            "mode": params.get("mode", src.get("mode", "local")),
+            "llm_provider": params.get("llm_provider"),
+            "_params": params,
+        }
+        progress_queues[new_job_id] = queue.Queue()
+    job_queue.put({"job_id": new_job_id, "url": url, "params": params})
+    with jobs_lock:
+        position = _queue_position(jobs[new_job_id])
+    return jsonify({"job_id": new_job_id, "position": position}), 202
 
 
 @app.route("/api/status/<job_id>")
