@@ -1671,7 +1671,10 @@ def _warn_unprotected_bind(host):
 
 
 if __name__ == "__main__":
-    host = (os.getenv("GUI_HOST") or "0.0.0.0").strip() or "0.0.0.0"
+    # Default to loopback: a GUI that can download/encode arbitrary video must
+    # not silently listen on the whole LAN. Set GUI_HOST=0.0.0.0 (ideally with
+    # GUI_TOKEN) to expose it to the network on purpose.
+    host = (os.getenv("GUI_HOST") or "127.0.0.1").strip() or "127.0.0.1"
     try:
         port = int(os.getenv("GUI_PORT") or 5000)
     except ValueError:
