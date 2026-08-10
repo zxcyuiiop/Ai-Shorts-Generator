@@ -88,7 +88,7 @@ def check_cv2_cascade():
 
 
 def check_blur_defaults():
-    """Defaults must yield sigma=22 and eq=brightness=-0.32,gblur=sigma=22.
+    """Defaults must yield sigma=22 and eq=brightness=-0.5,gblur=sigma=22.
 
     Function-level: _blur_sigma()/_dim_amount() read config.env() at call
     time. Filter-level: stub subprocess/getsize like test_blurpad.py does and
@@ -100,7 +100,7 @@ def check_blur_defaults():
         sigma = bp._blur_sigma()
         dim = bp._dim_amount()
         check("default blur sigma is 22", sigma == 22, f"sigma={sigma!r}")
-        check("default dim is 0.32", abs(dim - 0.32) < 1e-12, f"dim={dim!r}")
+        check("default dim is 0.5", abs(dim - 0.5) < 1e-12, f"dim={dim!r}")
 
         calls = []
         real_run, real_getsize = bp.subprocess.run, bp.os.path.getsize
@@ -119,8 +119,8 @@ def check_blur_defaults():
 
         check("default filter has gblur=sigma=22",
               "gblur=sigma=22" in filt, filt)
-        check("default filter dims BEFORE blurring: eq=brightness=-0.32,gblur=sigma=22",
-              "eq=brightness=-0.32,gblur=sigma=22" in filt, filt)
+        check("default filter dims BEFORE blurring: eq=brightness=-0.5,gblur=sigma=22",
+              "eq=brightness=-0.5,gblur=sigma=22" in filt, filt)
     finally:
         os.environ.pop("BLURPAD_SIGMA", None)
         os.environ.pop("BLURPAD_DIM", None)

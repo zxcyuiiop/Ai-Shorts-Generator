@@ -1320,6 +1320,7 @@ def save_short():
     On any failure the draft is left untouched so the user can retry.
     """
     from shorts_generator.config import clear_overrides, set_overrides
+    from shorts_generator.local.blurpad import blurpad_enabled_for
     from shorts_generator.local.clipper import _reframe_vertical, finalize_clip_local
 
     data = request.get_json(silent=True) or request.form.to_dict() or {}
@@ -1381,7 +1382,22 @@ def save_short():
 
     set_overrides(overrides)
     try:
-        _reframe_vertical(abs_path, tmp, aspect)
+        # 9:16-with-blur-bars: the draft is ALREADY landscape 16:9 (drafts are
+        # rendered horizontally on purpose). Reframing it to 602x1072 first and
+        # THEN blur-padding would force the foreground to re-scale to the full
+        # 1080x1920 canvas and leave no room for bars -- the bug where the blur
+        # silently became an expensive plain re-encode. So in that one combo we
+        # hand the landscape draft straight to finalize: blurpad scales
+        # width-to-canvas (1920x1080 -> 1080x608), producing the TikTok bars.
+        # Non-9:16 aspect + 9:16-without-bars still go through the classic
+        # face-tracked reframe.
+        skip_reframe = aspect == "9:16" and blurpad_enabled_for("9:16")
+        if skip_reframe:
+            print("[save] blur bars on: skipping reframe, blurpad takes the "
+                  "landscape draft directly", flush=True)
+            shutil.copy2(abs_path, tmp)
+        else:
+            _reframe_vertical(abs_path, tmp, aspect)
         finalize_clip_local(tmp, aspect, captions_ass=captions_ass)
     except Exception as e:
         for path in leftover:

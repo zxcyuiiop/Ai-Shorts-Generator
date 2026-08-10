@@ -167,11 +167,13 @@ def run_save_endpoint_checks():
             check("save: draft -> 200 {ok,saved}", r.status_code == 200
                   and body.get("ok") is True and body.get("saved") is True,
                   f"status={r.status_code} body={body}")
-            # reframe called with in=draft realpath, aspect from job (9:16)
-            re = clip._reframe_vertical.calls
-            ok = (len(re) == 1 and re[0][0][0] == os.path.realpath(draft_abs)
-                  and re[0][0][2] == "9:16")
-            check("save: reframe got (draft_path, tmp, '9:16')", ok, f"calls={re}")
+            # 9:16 + blur_bars on (the job's params): the draft is ALREADY
+            # landscape, so save_short skips the reframe and hands the draft
+            # straight to a blur-pad -- reframing first would stretch the fg
+            # back over the whole canvas and leave no bars (the shipped bug).
+            re_calls = clip._reframe_vertical.calls
+            check("save: blur bars on -> reframe SKIPPED (blurpad letterboxes)",
+                  re_calls == [], f"calls={re_calls}")
             # finalize called on the tmp with same aspect
             fi = clip.finalize_clip_local.calls
             check("save: finalize called once with aspect", len(fi) == 1 and fi[0][0][1] == "9:16",
@@ -186,23 +188,23 @@ def run_save_endpoint_checks():
             check("save: draft removed", not os.path.exists(draft_abs))
             with open(saved_abs, "rb") as f:
                 content = f.read()
-            check("save: final file = reframe output + fx", content == b"reframed:9:16+fx",
-                  f"bytes={content!r}")
+            check("save: final file = draft bytes + fx (no reframe in blur mode)",
+                  content == b"draftbytes+fx", f"bytes={content!r}")
         finally:
             webapp.jobs.pop("job-happy", None)
 
-        # --- failure path: reframe raises, draft intact ---
+        # --- failure path: blur stage blows up in finalize -> 500, draft ok ---
         draft_abs2 = new_draft("draft_02.mp4")
         draft_rel2 = f"{rel_dir}/draft_02.mp4"
         draft_url2 = f"/output/{draft_rel2}"
 
-        def reframe_raises(in_path, out_path, aspect):
-            with open(out_path, "wb") as f:
+        def finalize_raises(path, aspect, captions_ass=None):
+            with open(path, "ab") as f:
                 f.write(b"partial")
             raise RuntimeError("face-track exploded")
 
-        clip._reframe_vertical = Recorder(fn=reframe_raises)
-        clip.finalize_clip_local = Recorder()
+        clip._reframe_vertical = Recorder()
+        clip.finalize_clip_local = Recorder(fn=finalize_raises)
         webapp.jobs["job-fail"] = _mk_job(os.path.realpath(draft_abs2))
         try:
             r = client.post("/api/shorts/save", json={"url": draft_url2})

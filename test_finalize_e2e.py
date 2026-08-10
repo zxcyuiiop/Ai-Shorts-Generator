@@ -128,7 +128,7 @@ def main():
     real_overlay = _clip._overlay_tiktok
     real_music = _clip.mix_music
 
-    def blur_stub(in_path, out_path):
+    def blur_stub(in_path, out_path, log=print, source_path=None):
         calls["blur"].append((in_path, out_path))
         shutil.copyfile(in_path, out_path)
         return out_path

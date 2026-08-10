@@ -1,8 +1,10 @@
 """Checks for the blurred-background fit redesign in local/blurpad.py.
 
 Covers:
-  - fg uses force_original_aspect_ratio=decrease (whole frame, NO crop) and a
-    centred overlay=(W-w)/2:(H-h)/2
+  - fg branch fits BY WIDTH (scale=OUT_W:-2, NOT the degenerate
+    force_original_aspect_ratio=decrease against the full 9:16 canvas that
+    left no room for the bars -- that was the shipped bug) and a centred
+    overlay=(W-w)/2:(H-h)/2
   - bg chain is cover-scale + crop + eq dim + gblur, dim applied BEFORE blur
   - BLURPAD_FG_SCALE / BLURPAD_SIGMA / BLURPAD_DIM env knobs change the filter
   - clamp edges: fg scale 50..100, dim 0..0.7 (negative dim would brighten the
@@ -59,14 +61,28 @@ class SkipTest(Exception):
 
 
 def capture_filter(has_audio=True):
-    """Run apply_blur_padding with stubbed subprocess/getsize; return (filter, cmd)."""
+    """Run apply_blur_padding with stubbed subprocess/getsize; return (filter, cmd).
+
+    Stubs ffprobe-geometry probes as portrait (no landscape source found) so the
+    deterministic single-input split filter is exercised; the filter *shape*
+    only differs from the two-input landscape shape in the bg branch's input
+    pad ([1:v] vs [a]), everything else (fg fit-width, overlay, map/codec) is
+    identical between the two.
+    """
     calls = []
+
+    def fake_run(*a, **k):
+        cmd = a[0]
+        if cmd[0] == "ffprobe":
+            if "-show_entries" in cmd and "stream=width,height" in cmd:
+                return FakeProc(stdout="608,1080\n")
+            return FakeProc(stdout="audio\n" if has_audio else "")
+        calls.append(cmd)
+        return FakeProc()
+
     real_run, real_getsize = bp.subprocess.run, bp.os.path.getsize
     try:
-        bp.subprocess.run = lambda *a, **k: (
-            calls.append(a[0]) or
-            FakeProc(stdout="audio\n" if a[0][0] == "ffprobe" and has_audio else "")
-        )
+        bp.subprocess.run = fake_run
         bp.os.path.getsize = lambda p: 12345
         logs = []
         ret = bp.apply_blur_padding("in.mp4", "out.mp4", log=logs.append)
@@ -108,7 +124,7 @@ def e2e_blur_bands(tmp):
          "-t", "3", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-c:a", "aac", src],
         check=True, timeout=120)
 
-    clear_env()  # defaults: fg 100%, sigma 22, dim 0.32
+    clear_env()  # defaults: fg 100%, sigma 22, dim 0.5
     bp.apply_blur_padding(src, out, log=lambda s: None)
 
     probe = subprocess.run(
@@ -159,16 +175,18 @@ def main():
     tmp = tempfile.mkdtemp(prefix="blurpad-test-")
     clear_env()
     try:
-        # --- filter shape: decrease-scale fg, no fg crop, centred overlay -----
+        # --- filter shape: fit-width fg, no fg crop, centred overlay ---------
         filt, cmd, logs = capture_filter()
-        check("fg uses decrease aspect scale",
-              f"scale={bp.OUT_W}:{bp.OUT_H}:force_original_aspect_ratio=decrease" in filt, filt)
+        check("fg fits width to canvas (no increase re-fill)",
+              f"scale={bp.OUT_W}:-2" in filt and
+              f"scale={bp.OUT_W}:{bp.OUT_H}:force_original_aspect_ratio=decrease" not in filt,
+              filt)
         check("no crop on fg branch", "decrease,crop" not in filt and "[fg]" in filt, filt)
         check("even-dims fg pre-shrink present", "trunc(iw*100/100/2)*2" in filt, filt)
         check("centred overlay (W-w)/2:(H-h)/2", "overlay=(W-w)/2:(H-h)/2" in filt, filt)
         check("default sigma 22", "gblur=sigma=22" in filt, filt)
-        check("default dim 0.32 before blur",
-              "eq=brightness=-0.32,gblur=sigma=22" in filt, filt)
+        check("default dim 0.5 before blur",
+              "eq=brightness=-0.5,gblur=sigma=22" in filt, filt)
 
         # bg branch: increase-scale then crop (the cover trick), only the bg crops
         # filter segments: [0:v]split / [a]...=[bg] / [b]...=[fg] / [bg][fg]overlay...
@@ -234,7 +252,8 @@ def main():
         real_apply = bp.apply_blur_padding
         calls = []
         try:
-            bp.apply_blur_padding = lambda i, o, log=print: calls.append((i, o)) or o
+            bp.apply_blur_padding = lambda i, o, log=print, source_path=None: \
+                calls.append((i, o)) or o
             r = bp.apply_blur_padding_for_ar(src, dst, "9:16", log=lambda s: None)
             check("for_ar 9:16 -> blur pass", calls == [(src, dst)] and r == dst, str(calls))
         finally:
@@ -269,7 +288,7 @@ def main():
             f.write(b"draft")
         enabled_calls = []
 
-        def fake_apply(in_path, out_path, log=print):
+        def fake_apply(in_path, out_path, log=print, source_path=None):
             enabled_calls.append((in_path, out_path))
             with open(out_path, "wb") as f:
                 f.write(b"blurred")

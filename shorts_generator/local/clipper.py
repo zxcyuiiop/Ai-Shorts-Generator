@@ -610,13 +610,20 @@ def crop_clip_local(
 
 
 def finalize_clip_local(out_path: str, aspect_ratio: str,
-                        captions_ass: Optional[str] = None) -> str:
+                        captions_ass: Optional[str] = None,
+                        blur_source: Optional[str] = None) -> str:
     """Apply the visual/audio effects to a reframed clip, in place.
 
     Blur bars (9:16), TikTok-стайл оверлей и фоновая музыка — всё то, что
     раньше жёг комп на каждом черновике. Теперь вызывается только после того,
     как пользователь одобрил черновик в ревью‑панели. Безопасно падать частично:
     каждая стадия в своём try/except, клип никогда не теряется.
+
+    ``blur_source``: optional original landscape clip the draft was cut from;
+    forwarded to blurpad so the blurred backdrop comes from the FULL frame,
+    not the 9:16 crop (a 9:16 crop re-scaled onto the canvas leaves no room
+    for bars — that was the always-bright-blur bug). When omitted, blurpad
+    tries to rediscover the source next to the draft.
 
     Караоке‑субтитры: когда включены (`CAPTIONS_ENABLED`), берём sidecar
     ``out_path+'.ass'`` (либо явный ``captions_ass``) и вжигаем ПОСЛЕ blurpad
@@ -628,7 +635,7 @@ def finalize_clip_local(out_path: str, aspect_ratio: str,
         try:
             os.replace(out_path, swap_path)  # reframe output becomes blurpad input
             try:
-                apply_blur_padding(swap_path, out_path)
+                apply_blur_padding(swap_path, out_path, source_path=blur_source)
             finally:
                 if os.path.exists(swap_path):
                     try:
