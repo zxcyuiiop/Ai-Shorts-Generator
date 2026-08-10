@@ -16,8 +16,8 @@ Covers:
      cv2.data.haarcascades. Environment-dependent: skipped (not failed) when
      cv2 is not importable -- the whole file exits 0 after a SKIP line, per
      the run_all_tests.py convention.
-  3. Blur defaults: the current blurpad defaults produce gblur=sigma=18 and
-     eq=brightness=-0.06,gblur=sigma=18 (in that order) in the ffmpeg filter
+  3. Blur defaults: the current blurpad defaults produce gblur=sigma=22 and
+     eq=brightness=-0.32,gblur=sigma=22 (in that order) in the ffmpeg filter
      graph. The same assertions already live in test_blurpad.py -- this adds
      an independent, function-level check (no ffmpeg stubbing needed).
 
@@ -88,7 +88,7 @@ def check_cv2_cascade():
 
 
 def check_blur_defaults():
-    """Defaults must yield sigma=18 and eq=brightness=-0.06,gblur=sigma=18.
+    """Defaults must yield sigma=22 and eq=brightness=-0.32,gblur=sigma=22.
 
     Function-level: _blur_sigma()/_dim_amount() read config.env() at call
     time. Filter-level: stub subprocess/getsize like test_blurpad.py does and
@@ -99,8 +99,8 @@ def check_blur_defaults():
     try:
         sigma = bp._blur_sigma()
         dim = bp._dim_amount()
-        check("default blur sigma is 18", sigma == 18, f"sigma={sigma!r}")
-        check("default dim is 0.06", abs(dim - 0.06) < 1e-12, f"dim={dim!r}")
+        check("default blur sigma is 22", sigma == 22, f"sigma={sigma!r}")
+        check("default dim is 0.32", abs(dim - 0.32) < 1e-12, f"dim={dim!r}")
 
         calls = []
         real_run, real_getsize = bp.subprocess.run, bp.os.path.getsize
@@ -117,10 +117,10 @@ def check_blur_defaults():
         finally:
             bp.subprocess.run, bp.os.path.getsize = real_run, real_getsize
 
-        check("default filter has gblur=sigma=18",
-              "gblur=sigma=18" in filt, filt)
-        check("default filter dims BEFORE blurring: eq=brightness=-0.06,gblur=sigma=18",
-              "eq=brightness=-0.06,gblur=sigma=18" in filt, filt)
+        check("default filter has gblur=sigma=22",
+              "gblur=sigma=22" in filt, filt)
+        check("default filter dims BEFORE blurring: eq=brightness=-0.32,gblur=sigma=22",
+              "eq=brightness=-0.32,gblur=sigma=22" in filt, filt)
     finally:
         os.environ.pop("BLURPAD_SIGMA", None)
         os.environ.pop("BLURPAD_DIM", None)

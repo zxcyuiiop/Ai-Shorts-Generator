@@ -3,10 +3,11 @@
 Classic blurred-background fit -- NOTHING is cropped:
 
   * background: the video scaled to cover OUT_W x OUT_H (1080x1920),
-    centre-cropped to the canvas size, dimmed (BLURPAD_DIM, default 0.06)
-    and blurred (gblur sigma=BLURPAD_SIGMA, default 18) -- the default dim
-    keeps the backdrop close to the source frame's natural brightness (as
-    seen in the mobile-clip examples) while the blur keeps it soft enough
+    centre-cropped to the canvas size, dimmed (BLURPAD_DIM, default 0.32)
+    and blurred (gblur sigma=BLURPAD_SIGMA, default 22) -- the default dim
+    drops the backdrop to roughly 0.7x of the foreground brightness
+    (matching the TikTok reference frames, where the bars sit clearly
+    darker than the content) while the blur keeps it soft enough
     to never fight the sharp foreground;
   * foreground: the WHOLE frame, scaled to fit inside the fg box with
     force_original_aspect_ratio=decrease (16:9 source -> 1080x608), width/height
@@ -56,25 +57,26 @@ def _fg_scale_percent() -> float:
 
 
 def _blur_sigma() -> float:
-    """BLURPAD_SIGMA env: gblur sigma for the background layer. Invalid -> 18."""
+    """BLURPAD_SIGMA env: gblur sigma for the background layer. Invalid -> 22."""
     try:
-        return float(str(env("BLURPAD_SIGMA", "18") or "18").strip())
+        return float(str(env("BLURPAD_SIGMA", "22") or "22").strip())
     except (TypeError, ValueError):
-        return 18.0
+        return 22.0
 
 
 def _dim_amount() -> float:
     """BLURPAD_DIM env: background darkening 0..0.7 (eq brightness=-X before blur).
 
-    Default 0.06 -- barely darkened, keeping the backdrop close to the source
-    frame's natural brightness (as seen in the mobile-clip examples) instead
-    of crushing it toward black. Clamped at 0.7: beyond that the backdrop
-    is essentially black and the blur stops being visible.
+    Default 0.32 -- the backdrop lands around 0.7x of the foreground's
+    brightness on typical content, mirroring the TikTok blur-bar reference
+    where the bars sit clearly darker than the centre content. Clamped at
+    0.7: beyond that the backdrop is essentially black and the blur stops
+    being visible.
     """
     try:
-        return _clamp(float(str(env("BLURPAD_DIM", "0.06") or "0.06").strip()), 0.0, 0.7)
+        return _clamp(float(str(env("BLURPAD_DIM", "0.32") or "0.32").strip()), 0.0, 0.7)
     except (TypeError, ValueError):
-        return 0.06
+        return 0.32
 
 
 def blurpad_enabled_for(aspect_ratio: str) -> bool:

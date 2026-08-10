@@ -108,7 +108,7 @@ def e2e_blur_bands(tmp):
          "-t", "3", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-c:a", "aac", src],
         check=True, timeout=120)
 
-    clear_env()  # defaults: fg 100%, sigma 18, dim 0.06
+    clear_env()  # defaults: fg 100%, sigma 22, dim 0.32
     bp.apply_blur_padding(src, out, log=lambda s: None)
 
     probe = subprocess.run(
@@ -166,9 +166,9 @@ def main():
         check("no crop on fg branch", "decrease,crop" not in filt and "[fg]" in filt, filt)
         check("even-dims fg pre-shrink present", "trunc(iw*100/100/2)*2" in filt, filt)
         check("centred overlay (W-w)/2:(H-h)/2", "overlay=(W-w)/2:(H-h)/2" in filt, filt)
-        check("default sigma 18", "gblur=sigma=18" in filt, filt)
-        check("default dim 0.06 before blur",
-              "eq=brightness=-0.06,gblur=sigma=18" in filt, filt)
+        check("default sigma 22", "gblur=sigma=22" in filt, filt)
+        check("default dim 0.32 before blur",
+              "eq=brightness=-0.32,gblur=sigma=22" in filt, filt)
 
         # bg branch: increase-scale then crop (the cover trick), only the bg crops
         # filter segments: [0:v]split / [a]...=[bg] / [b]...=[fg] / [bg][fg]overlay...
