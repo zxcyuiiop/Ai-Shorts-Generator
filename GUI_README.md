@@ -123,10 +123,7 @@ AI-Youtube-Shorts-Generator/
 ## Troubleshooting
 
 ### Порт уже занят
-Смени порт в `app.py`:
-```python
-app.run(debug=True, host='0.0.0.0', port=5001)
-```
+Смени порт через env: `set GUI_PORT=5001` (Windows) / `export GUI_PORT=5001` (Linux/Mac) перед запуском. Хост тоже через env — `GUI_HOST` (по умолчанию `0.0.0.0`, с предупреждением в консоль; поставь `127.0.0.1`, если панель нужна только с этого компа), а `GUI_TOKEN` включит токен-аут для `/api/*`.
 
 ### API ключи не настроены
 Проверь `.env` (см. `.env.example`)

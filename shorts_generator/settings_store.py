@@ -101,6 +101,23 @@ MASK = "••••••••"
 
 _lock = threading.Lock()
 
+_chmod_warned = False
+
+# Substrings that mark a placeholder copied verbatim from .env.example rather
+# than a real key; saving those would clobber a valid env key with junk.
+_PLACEHOLDER_MARKERS = ("your_key_here", "your-key-here", "your_api_key",
+                        "your-api-key")
+
+
+def _is_placeholder(value) -> bool:
+    """True when a value is an .env.example placeholder, not a real key."""
+    if not isinstance(value, str):
+        return False
+    v = value.strip().lower()
+    if not v:
+        return False
+    return any(marker in v for marker in _PLACEHOLDER_MARKERS)
+
 
 def _alias_value(field: str, value):
     """Normalize a GUI checkbox/toggle value to the "1"/"0" env string.
@@ -144,6 +161,10 @@ def save(incoming: Dict) -> Dict:
         for key, value in incoming.items():
             if key in SECRET_FIELDS and value == MASK:
                 continue  # masked placeholder: leave the stored key alone
+            if key in SECRET_FIELDS and _is_placeholder(value):
+                # .env.example placeholder pasted as a key -- pretend it is
+                # empty instead of persisting junk over a real key.
+                value = ""
             current[key] = value
 
         # Persist uppercase env aliases alongside the lowercase GUI field names,
@@ -165,8 +186,13 @@ def save(incoming: Dict) -> Dict:
 
         try:
             os.chmod(SETTINGS_PATH, stat.S_IRUSR | stat.S_IWUSR)  # 0600
-        except OSError:
-            pass  # best-effort; Windows ACLs don't map cleanly
+        except OSError as e:
+            global _chmod_warned
+            if not _chmod_warned:
+                _chmod_warned = True
+                print(f"[settings] WARNING: os.chmod 0600 failed for "
+                      f"{SETTINGS_PATH}: {e} -- the settings file (API keys) "
+                      f"may be readable by other users.", flush=True)
 
     return current
 

@@ -4,11 +4,14 @@ import json
 import os
 import queue
 import re
+import hmac
+import logging
 import shutil
 import subprocess
 import sys
 import threading
 import time
+from urllib.parse import urlparse
 
 # Pipeline progress lines contain non-ASCII characters like →, which crash on
 # Windows consoles defaulting to cp1252/cp1251. Same fix as main.py.
@@ -44,6 +47,197 @@ job_queue = queue.Queue()
 
 # Keep at most this many finished jobs; the browser only ever needs the latest.
 MAX_FINISHED_JOBS = 20
+
+log = logging.getLogger("aishorts.gui")
+
+# TTL for live progress_queues entries (created when a job is queued, reaped on
+# terminal state). Guards against a leak if both a worker crash and the
+# terminal-event code path miss the cleanup.
+PROGRESS_QUEUE_TTL = 6 * 3600
+
+# Absolute lifetime cap for one SSE connection, even on an eternal keepalive
+# diet -- a stuck browser tab must not pin a connection forever.
+SSE_MAX_LIFETIME = 6 * 3600
+
+# Streaming upload cap. MAX_CONTENT_LENGTH already rejects large requests up
+# front, but that limit trusts the Content-Length header; chunked uploads can
+# slide past it, so we also count bytes as they hit the disk.
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES") or
+                       app.config["MAX_CONTENT_LENGTH"])
+
+_ASPECT_WHITELIST = {"9:16", "16:9", "1:1", "4:5", "4:3"}
+_FORMAT_WHITELIST = {"2160", "1440", "1080", "720", "480", "360", "best", "audio"}
+
+# Hosts the downloader is allowed to talk to (SSRF guard). Covers youtube.com
+# itself, every subdomain (including music.youtube.com) and youtu.be links.
+ALLOWED_URL_HOSTS = ("youtube.com", "youtu.be")
+
+
+def _parse_url(source):
+    """urlparse that returns (parsed, is_http_url); swallows garbage input.
+    Windows paths parse as scheme="c" etc. and are correctly NOT http."""
+    try:
+        parsed = urlparse((source or "").strip())
+    except (ValueError, TypeError):
+        return None, False
+    return parsed, parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def _is_allowed_video_url(url):
+    """True only for http(s) URLs on the YouTube allow-list.
+
+    An explicit netloc check keeps payloads like ``https://evil.com/?q=``
+    (SSRF into the LAN) from ever reaching yt-dlp.
+    """
+    try:
+        parsed = urlparse((url or "").strip())
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in ALLOWED_URL_HOSTS)
+
+
+def _looks_like_local_path(value):
+    """True when the saved/form value is a local filesystem path, not a URL."""
+    v = (value or "").strip()
+    if not v or "://" in v:
+        return False
+    return v.startswith(("/", "~")) or (len(v) > 1 and v[1] == ":") or \
+        os.sep in v
+
+
+def _parse_num_clips(value):
+    """Parse num_clips, clamped to [1, 20]. Returns (int, None) or (None, err)."""
+    try:
+        n = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None, "num_clips должен быть целым числом от 1 до 20"
+    if n < 1:
+        log.info("num_clips=%s below range, clamped to 1", n)
+        n = 1
+    elif n > 20:
+        log.info("num_clips=%s above range, clamped to 20", n)
+        n = 20
+    return n, None
+
+
+def _is_terminal_job(job):
+    return bool(job) and job.get("status") in (
+        "completed", "error", "cancelled", "canceled")
+
+
+def _finish_progress_queue(job_id):
+    """Hook run once a job reaches a terminal state.
+
+    Unblocks every SSE stream parked in q.get() on this queue (the sentinel
+    index is dropped by the idx < next_idx dedup) and marks the queue for TTL
+    reaping in _prune_finished_jobs.
+    """
+    q = progress_queues.get(job_id)
+    if q is not None:
+        if getattr(q, "_created_at", None) is None:
+            q._created_at = time.time()
+        q.put(-1)
+
+
+def _reap_stale_progress_queues():
+    """Drop queue entries for jobs that finished (or vanished) long ago."""
+    now = time.time()
+    for jid, q in list(progress_queues.items()):
+        created = getattr(q, "_created_at", None)
+        if created is None or now - created < PROGRESS_QUEUE_TTL:
+            continue
+        if _is_terminal_job(jobs.get(jid)) or jid not in jobs:
+            progress_queues.pop(jid, None)
+
+
+_error_pattern = re.compile(r"^[A-Za-z_][\w.]*$")
+
+
+def _base_message(msg):
+    """First line of str(e) with any absolute paths from this machine stripped
+    out -- the client never learns the server's directory layout."""
+    line = re.sub(r"(\w:\\[^\s\"']+|/(?:[\w.-]+/)+[\w.~-]+)", "…", (msg or "").strip())
+    return line.splitlines()[0][:300].strip()
+
+
+def _humanize_error(e):
+    """Map a pipeline exception to a safe Russian message for the browser.
+
+    The full traceback goes to the server log; the client gets a sanitized
+    message. Downstream-tool errors (yt-dlp / ffmpeg) keep their sanitized text
+    -- users read those to fix cookies/codecs. Everything else collapses to the
+    exception class so internal paths/state can't leak.
+    """
+    raw = str(e)
+    low = raw.lower()
+    if "sign in to confirm" in low or "not a bot" in low:
+        return ("YouTube отклонил запрос (проверка «вы не бот»). "
+                "Обновите cookies для yt-dlp в настройках.")
+    if "this video is unavailable" in low or "video unavailable" in low:
+        return "Видео недоступно на YouTube (удалено, приватное или регион-блок)."
+    if "unsupported url" in low:
+        return "Этот URL не поддерживается. Нужна ссылка на YouTube."
+    if isinstance(e, (FileNotFoundError, PermissionError)):
+        base = _base_message(raw)
+        label = {"FileNotFoundError": "Файл не найден",
+                 "PermissionError": "Нет доступа к файлу"}[type(e).__name__]
+        return f"{label}: {base}" if base else label
+    if isinstance(e, subprocess.TimeoutExpired):
+        return "Ошибка пайплайна: внешняя команда зависла и была прервана по таймауту"
+    base = _base_message(raw)
+    if base and any(marker in low for marker in (
+            "yt-dlp", "ytdlp", "codec", "ffmpeg", "http error",
+            "failed to download", "unable to download",
+            # Transcription errors are already user-safe and informative —
+            # keep their (sanitized) text instead of a bare exception name.
+            "whisper", "no segments", "no speech", "transcri")):
+        return base  # yt-dlp/ffmpeg already speak to the user; paths sanitized
+    name = type(e).__name__ if _error_pattern.match(type(e).__name__) else "InternalError"
+    return f"Ошибка пайплайна: {name}"
+
+
+def _gui_token():
+    """GUI_TOKEN from env/settings/this-process override; empty means no auth."""
+    for source in (os.environ.get("GUI_TOKEN"),
+                   settings_store.load().get("GUI_TOKEN"),
+                   getattr(_gui_token, "override", None)):
+        if isinstance(source, str) and source.strip():
+            return source.strip()
+    return None
+
+
+def _check_gui_token():
+    """Bearer header or ?token= must match hmac-compared GUI_TOKEN."""
+    import secrets as _secrets
+
+    token = _gui_token()
+    if not token:
+        return True
+    auth = request.headers.get("Authorization", "")
+    candidate = None
+    if auth.startswith("Bearer "):
+        candidate = auth[7:].strip()
+    if not candidate:
+        candidate = (request.args.get("token") or "").strip()
+    return bool(candidate) and _secrets.compare_digest(candidate, token)
+
+
+@app.before_request
+def _require_api_token():
+    """Gate /api/* behind GUI_TOKEN when one is configured.
+
+    Off by default: without a token the GUI works exactly as before. Static /
+    template / /output routes stay open either way (same-machine UX assets).
+    """
+    if not request.path.startswith("/api/"):
+        return None
+    if _check_gui_token():
+        return None
+    return jsonify({"error": "Требуется авторизация: передайте токен как "
+                             "'Authorization: Bearer <GUI_TOKEN>' или ?token="}), 401
 
 
 # Map a pipeline log line to (stage, percent). The pipeline already prints its
@@ -250,11 +444,13 @@ def _prune_finished_jobs():
         if j.get("status") in ("completed", "error")
     ]
     if len(finished) <= MAX_FINISHED_JOBS:
+        _reap_stale_progress_queues()
         return
     finished.sort(key=lambda kv: kv[1].get("finished_at") or 0)
     for jid, _ in finished[: len(finished) - MAX_FINISHED_JOBS]:
         jobs.pop(jid, None)
         progress_queues.pop(jid, None)
+    _reap_stale_progress_queues()
 
 
 def _valid_unit(value):
@@ -510,18 +706,24 @@ def background_task(job_id, youtube_url, num_clips, aspect_ratio,
 
         _publish(job_id, {"stage": "done", "progress": 100,
                           "elapsed": elapsed, "result": result})
+        _finish_progress_queue(job_id)
 
     except Exception as e:
+        # Full traceback stays in the server log; the browser only gets a
+        # sanitized message -- raw str(e) can leak paths and internal state.
+        log.exception("job %s failed", job_id)
+        friendly = _humanize_error(e)
         with jobs_lock:
             job = jobs.get(job_id)
             if job is not None:
                 job["finished_at"] = time.time()
                 elapsed = job["finished_at"] - job["started_at"]
-                job.update(status="error", error=str(e), elapsed=elapsed)
+                job.update(status="error", error=friendly, elapsed=elapsed)
                 _prune_finished_jobs()
             else:
                 elapsed = 0
-        _publish(job_id, {"status": "error", "error": str(e), "elapsed": elapsed})
+        _publish(job_id, {"status": "error", "error": friendly, "elapsed": elapsed})
+        _finish_progress_queue(job_id)
     finally:
         clear_overrides()
 
@@ -544,6 +746,44 @@ def post_settings():
     return jsonify(settings_store.mask_secrets(saved))
 
 
+MAX_UPLOAD_CHUNK = 1024 * 1024  # read/write a file 1 MB at a time
+
+
+def _save_upload_limited(file_storage, save_path):
+    """Save an uploaded file while enforcing MAX_UPLOAD_BYTES, chunk by chunk.
+
+    MAX_CONTENT_LENGTH relies on the Content-Length header, which a chunked
+    upload never sends -- so we count the bytes ourselves and abort at the cap.
+    Returns None on success, or "413" after removing the partial file.
+    """
+    written = 0
+    try:
+        with open(save_path, "wb") as out:
+            while True:
+                chunk = file_storage.stream.read(MAX_UPLOAD_CHUNK)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > MAX_UPLOAD_BYTES:
+                    raise _UploadTooLarge()
+                out.write(chunk)
+    except _UploadTooLarge:
+        try:
+            os.remove(save_path)
+        except OSError:
+            pass
+        return "413"
+    return None
+
+
+class _UploadTooLarge(Exception):
+    pass
+
+
+_PAYLOAD_TOO_LARGE_RU = ("Файл слишком большой (лимит "
+                         f"{MAX_UPLOAD_BYTES // (1024 ** 3)} ГБ)")
+
+
 @app.route("/api/upload", methods=["POST"])
 def upload_video():
     """Accept a video file from the browser and save it to the uploads directory."""
@@ -564,7 +804,8 @@ def upload_video():
     unique_name = f"{timestamp}_{safe_name}"
     save_path = os.path.join(UPLOAD_DIR, unique_name)
 
-    file.save(save_path)
+    if _save_upload_limited(file, save_path) is not None:
+        return jsonify({"error": _PAYLOAD_TOO_LARGE_RU}), 413
     return jsonify({"path": save_path, "filename": unique_name}), 200
 
 
@@ -595,7 +836,8 @@ def upload_music():
     unique_name = f"music_{int(time.time())}_{safe_name}"
     save_path = os.path.join(MUSIC_UPLOAD_DIR, unique_name)
 
-    file.save(save_path)
+    if _save_upload_limited(file, save_path) is not None:
+        return jsonify({"error": _PAYLOAD_TOO_LARGE_RU}), 413
     return jsonify({"ok": True, "filename": unique_name, "path": save_path}), 200
 
 
@@ -615,9 +857,15 @@ def generate():
     source_type = _get("source_type", "url")
     mode = _get("mode", "api")
     llm_provider = _get("llm_provider") or None
-    num_clips = int(_get("num_clips", 3))
+    num_clips, err = _parse_num_clips(_get("num_clips", 3))
+    if err:
+        return jsonify({"error": err}), 400
     aspect_ratio = _get("aspect_ratio", "9:16")
+    if aspect_ratio not in _ASPECT_WHITELIST:
+        aspect_ratio = "9:16"
     download_format = _get("format", "720")
+    if download_format not in _FORMAT_WHITELIST:
+        download_format = "720"
     language = _get("language") or None
     whisper_device = _get("whisper_device", "auto")
     whisper_model = _get("whisper_model", "base")
@@ -660,6 +908,22 @@ def generate():
     # reach a path that lives on the user's machine.
     if source_type == "file" and mode != "local":
         return jsonify({"error": "Local files require Local mode"}), 400
+
+    # SSRF guard. The allow-list applies to anything that IS a URL, regardless
+    # of what source_type claims -- Windows paths come in as "C:/..." (which
+    # urlparse reads as a "c:" scheme, not http), so an explicit-URL form value
+    # with a pasted local path must stay usable. Only real http(s) URLs are
+    # gated; everything else is treated as a local path (mode rules above
+    # still apply). Runs BEFORE anything is dispatched to the downloader.
+    parsed, is_http_url = _parse_url(youtube_url)
+    if is_http_url:
+        if not _is_allowed_video_url(youtube_url):
+            log.warning("rejected non-allow-listed URL in /api/generate: %r",
+                        youtube_url[:200])
+            return jsonify({"error": "Поддерживаются только ссылки на YouTube "
+                                     "(youtube.com, music.youtube.com, youtu.be)"}), 400
+        if not source_type:
+            source_type = "url"
 
     job_id = f"job_{int(time.time() * 1000)}"
     params = {
@@ -752,7 +1016,10 @@ def generate():
 
     job_queue.put({"job_id": job_id, "url": youtube_url, "params": params})
 
-    return jsonify({"job_id": job_id, "position": _queue_position(jobs[job_id])}), 202
+    # Read under the lock: the worker may already be rewriting this job.
+    with jobs_lock:
+        position = _queue_position(jobs[job_id])
+    return jsonify({"job_id": job_id, "position": position}), 202
 
 
 @app.route("/api/jobs")
@@ -816,10 +1083,25 @@ def progress_stream(job_id):
         for event in backlog:
             yield f"data: {json.dumps(event)}\n\n"
 
+        # A terminal status at this point means everything already happened
+        # before we connected -- replay was the whole story, close the stream.
+        with jobs_lock:
+            if _is_terminal_job(jobs.get(job_id)):
+                return
+
+        deadline = time.monotonic() + SSE_MAX_LIFETIME
         while True:
             try:
                 idx = q.get(timeout=15)
             except queue.Empty:
+                # Keepalive loop: a job stuck on a >15s stage (big uploads,
+                # whisper cold start) must still close the stream once it
+                # reaches a terminal state instead of hanging forever.
+                with jobs_lock:
+                    if _is_terminal_job(jobs.get(job_id)):
+                        return
+                if time.monotonic() > deadline:
+                    return  # absolute cap, even if the job never finishes
                 yield ": keepalive\n\n"
                 continue
 
@@ -1244,39 +1526,45 @@ def finalize_short():
     if not os.path.isfile(abs_path):
         return jsonify({"error": "File not found"}), 404
 
-    # aspect_ratio: explicit in the request, else the job that produced the clip.
-    # We capture that job here and reuse it both for aspect_ratio and for the
-    # per-request override snapshot below.
+    # The draft has to belong to a job this server produced (paths recorded in
+    # its result). A known job wins, so its params drive per-request overrides.
+    # With no job (private file like ../adds.txt never matches) we must avoid
+    # leaking its existence -- return a generic 404 unless the path is plainly
+    # not sensitive: dot-paths, hidden names, or anything outside a normal
+    # clip/ drafts tree would let an enum confirm presence by response shape.
     job = None
-    aspect_ratio = (data.get("aspect_ratio") or "").strip()
-    if not aspect_ratio:
-        with jobs_lock:
-            snapshot = [dict(j) for j in jobs.values()]
-        output_dir = os.path.realpath(LOCAL_OUTPUT_DIR)
-        for _job in snapshot:
-            if abs_path in _job_short_files(_job, output_dir):
-                aspect_ratio = (_job.get("aspect_ratio") or "").strip()
-                job = _job
-                if aspect_ratio:
+    draft_aspect = ""
+    with jobs_lock:
+        snapshot = [dict(j) for j in jobs.values()]
+    output_dir = os.path.realpath(LOCAL_OUTPUT_DIR)
+    for _job in snapshot:
+        if abs_path in _job_short_files(_job, output_dir):
+            job = _job
+            for short in (_job.get("result") or {}).get("shorts") or []:
+                if (short.get("target_aspect") or "").strip():
+                    draft_aspect = short["target_aspect"].strip()
                     break
-    else:
-        # Explicit aspect_ratio still benefits from the job's params when the
-        # caller didn't pass one; only scan if we actually need to.
-        with jobs_lock:
-            snapshot = [dict(j) for j in jobs.values()]
-        output_dir = os.path.realpath(LOCAL_OUTPUT_DIR)
-        for _job in snapshot:
-            if abs_path in _job_short_files(_job, output_dir):
-                job = _job
-                break
-    aspect_ratio = aspect_ratio or "9:16"
+            break
+    if job is None:
+        # File is known to exist (isfile check above). Public-looking names
+        # carry no existence signal worth protecting, so a restarted GUI can
+        # still finalize them with raw effects instead of being stuck at 404.
+        # Any name containing a dotfile segment or a drive-relative traversal
+        # is treated as private -> same 404 as a missing file.
+        suspicious = any(part.startswith(".") for part in safe_rel.split("/"))
+        if suspicious:
+            return jsonify({"error": "Клип не найден ни в одном задании (job)"}), 404
+
+    aspect_ratio = (data.get("aspect_ratio") or "").strip() \
+        or ((job or {}).get("aspect_ratio") or "").strip() \
+        or draft_aspect or "9:16"
 
     # Per-request overrides the browser submitted for this job. finalize runs
     # in a fresh thread, so without this the watermark toggle set on the review
     # panel is lost and the clip re-acquires its effects from the persisted
-    # settings file instead of the user's GUI state. If no job is found we
-    # fall back to the persisted lowercase settings keys (which the
-    # settings-aliases fix makes visible to config.env too).
+    # settings file instead of the user's GUI state. A clip with no owning job
+    # (e.g. left over from before a restart) falls back to raw overrides +
+    # persisted settings.
     p = (job or {}).get("_params") or {}
     overrides = _overrides_from(
         (job or {}).get("mode") or p.get("mode") or "local",
@@ -1320,7 +1608,29 @@ def finalize_short():
     })
 
 
+def _warn_unprotected_bind(host):
+    """One-time loud warning when binding non-loopback without a GUI token:
+    with host=0.0.0.0 anyone on the LAN can drive the pipeline (and upload
+    gigabytes of video) unless the API is gated by a token."""
+    is_loopback = host in ("127.0.0.1", "localhost", "::1")
+    if is_loopback or _gui_token():
+        return
+    bar = "!" * 70
+    print(f"\n{bar}\n"
+          "  ВНИМАНИЕ: GUI слушает на всей сети (host={host}) БЕЗ токена.\n"
+          "  Любой в локальной сети может вызывать /api/*. Задайте токен:\n"
+          "    set GUI_TOKEN=<случайная-строка>   (или в settings.local.json)\n"
+          "  или привяжите сервер к localhost:   set GUI_HOST=127.0.0.1\n"
+          f"{bar}\n".replace("{host}", host), flush=True)
+
+
 if __name__ == "__main__":
+    host = (os.getenv("GUI_HOST") or "0.0.0.0").strip() or "0.0.0.0"
+    try:
+        port = int(os.getenv("GUI_PORT") or 5000)
+    except ValueError:
+        port = 5000
+    _warn_unprotected_bind(host)
     # debug=False: the Werkzeug debugger allows arbitrary code execution, and
     # this binds to 0.0.0.0. use_reloader would also double-run the job threads.
-    app.run(debug=False, host="0.0.0.0", port=5000, threaded=True)
+    app.run(debug=False, host=host, port=port, threaded=True)
