@@ -1209,11 +1209,23 @@ wireClick('music_upload_btn', async () => {
         document.getElementById('music_file').value = data.path || '';
         document.getElementById('music_file_label').textContent = data.filename || file.name;
         document.getElementById('music_file_label').title = data.path || '';
-        showToast('Музыка загружена', 'success');
+        uploadInput.value = '';  // сброс, чтобы повторный выбор того же файла снова триггернул change
+        showToast(`Музыка загружена: ${data.filename || file.name}`, 'success');
     } catch (e) {
         showToast(e.message || 'Не удалось загрузить музыку', 'error');
     } finally {
         btn.disabled = false;
+    }
+});
+// Мгновенный отклик на выбор файла: показываем имя в label до клика «Загрузить»,
+// чтобы было видно, что файл выбран, а загрузка — отдельный шаг.
+wireChange('music_upload', () => {
+    const uploadInput = document.getElementById('music_upload');
+    const file = uploadInput.files && uploadInput.files[0];
+    const label = document.getElementById('music_file_label');
+    if (file) {
+        label.textContent = `Выбран: ${file.name} — нажмите «Загрузить»`;
+        label.title = '';
     }
 });
 
