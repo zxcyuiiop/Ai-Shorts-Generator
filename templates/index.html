@@ -604,34 +604,10 @@
     </script>
     <script>
         document.getElementById('save-settings-btn').addEventListener('click', async (event) => {
-            const form = document.getElementById('generate-form');
-            const data = new FormData(form);
-            const overlayData = {
-                overlay_position: document.getElementById('overlay_position').value,
-                overlay_margin: document.getElementById('overlay_margin').value,
-                overlay_scale: document.getElementById('overlay_scale').value,
-                use_overlay_opencv: document.getElementById('use_overlay_opencv').checked ? '1' : '0',
-                overlay_enabled: document.getElementById('overlay_enabled').checked ? '1' : '0',
-                overlay_x: document.getElementById('overlay_x').value,
-                overlay_y: document.getElementById('overlay_y').value,
-            };
-            // Checkboxes absent from FormData when unchecked -- pin them to '0'
-            // so an explicit "off" persists instead of the server default.
-            const processingData = {
-                silence_cut: document.getElementById('silence_cut').checked ? '1' : '0',
-                blur_bars: document.getElementById('blur_bars').checked ? '1' : '0',
-                music_enabled: document.getElementById('music_enabled').checked ? '1' : '0',
-                music_file: document.getElementById('music_file').value,
-                music_volume: document.getElementById('music_volume').value,
-                captions_enabled: document.getElementById('captions_enabled').checked ? '1' : '0',
-                caption_style: document.getElementById('caption_style').value,
-                face_track: document.getElementById('face_track').checked ? '1' : '0',
-                caption_position: document.getElementById('caption_position').value,
-                caption_margin_v: document.getElementById('caption_margin_v').value,
-            };
-            const payload = {};
-            for (const [k, v] of data.entries()) payload[k] = v;
-            Object.assign(payload, overlayData, processingData);
+            // Payload собирает app.js по id элементов (SETTING_FIELDS). Поля
+            // провайдеров не имеют name и невидимы для FormData — отсюда был
+            // баг «NIM ключ не сохраняется».
+            const payload = window.collectSettingsPayload();
             const btn = event.target;
             const original = btn.textContent;
             btn.disabled = true;

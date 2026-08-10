@@ -118,6 +118,30 @@ window.markSettingsSaved = () => {
     refreshDirty();
 };
 
+// Собирает полный payload для POST /api/settings по id элементов.
+// FormData тут не подходит: у полей провайдеров (nim_key, openai_key, ...)
+// нет атрибута name, поэтому FormData их молча пропускала — отсюда баг
+// «NIM ключ не сохраняется». Checkbox-поля шлём всегда как '1'/'0', чтобы
+// явное «выкл» тоже переживало перезапуск. Пустой секрет не шлём вовсе:
+// иначе он затирал бы сохранённый ключ (пустое поле = «не менять»,
+// сохранённый ключ в DOM не попадает — только placeholder-маска).
+function collectSettingsPayload() {
+    const payload = {};
+    for (const field of SETTING_FIELDS) {
+        const el = document.getElementById(field);
+        if (!el) continue;
+        if (el.type === 'checkbox') {
+            payload[field] = el.checked ? '1' : '0';
+            continue;
+        }
+        const value = String(el.value);
+        if (value === '' && SECRET_FIELDS.has(field)) continue;
+        payload[field] = value;
+    }
+    return payload;
+}
+window.collectSettingsPayload = collectSettingsPayload;
+
 let timerHandle = null;
 let activeJobId = null;          // job whose SSE stream is being followed
 const polledJobs = {};           // job_id -> latest /api/jobs status snapshot

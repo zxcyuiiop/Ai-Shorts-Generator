@@ -164,6 +164,43 @@ def main():
         check("real value passes through",
               settings_store.resolve_secret("nim_key", "nvapi-new") == "nvapi-new")
 
+        # --- save-button contract: it must collect by id, not FormData ---
+        # Баг «nim не сохраняется» жил не на сервере, а в JS: кнопка брала
+        # FormData, а у полей провайдеров (id без name) его там не было.
+        check("save button uses collectSettingsPayload()",
+              "window.collectSettingsPayload()" in html)
+        check("collector exists in app.js",
+              "function collectSettingsPayload()" in app_js)
+        check("collector exposed to the inline handler",
+              "window.collectSettingsPayload = collectSettingsPayload" in app_js)
+        check("collector iterates every persisted field",
+              "for (const field of SETTING_FIELDS)" in app_js)
+        nim_field = re.search(r'id="nim_key"[^>]*>', html)
+        check("nim_key has no name (hence FormData never sent it)",
+              nim_field is not None and "name=" not in nim_field.group(0))
+
+        # Full round-trip exactly as the fixed front-end sends it: provider
+        # fields present, empty secret absent (collector skips empty secrets so
+        # a stored key is never clobbered by a blank box).
+        c.post("/api/settings", json={
+            "mode": "local", "llm_provider": "nim",
+            "nim_key": "nvapi-round-trip", "nim_model": "meta/llama-3.1-8b-instruct",
+            "captions_enabled": "1",
+        })
+        got = c.get("/api/settings").get_json()
+        check("nim key+model persist through the new payload",
+              settings_store.load().get("nim_key") == "nvapi-round-trip"
+              and got.get("nim_key") == MASK
+              and got.get("nim_model") == "meta/llama-3.1-8b-instruct")
+        # A later save with the secret absent must keep it (matches collector:
+        # empty secret fields are simply not sent).
+        c.post("/api/settings", json={"mode": "local", "num_clips": "3",
+                                      "captions_enabled": "0"})
+        check("key survives a save that omits it",
+              settings_store.load().get("nim_key") == "nvapi-round-trip")
+        check("explicit checkbox off persists as '0'",
+              settings_store.load().get("captions_enabled") == "0")
+
         # --- music upload: the GUI sends the audio under the "music" field ---
         wav = io.BytesIO(b"RIFF" + b"\x00" * 40)
         r = c.post("/api/upload/music", data={"music": (wav, "song.wav")},
