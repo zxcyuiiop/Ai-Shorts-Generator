@@ -34,6 +34,41 @@ const STATUS_LABELS = {
     error: 'Ошибка',
 };
 
+// Крупные этапы пайплайна для трекера над прогресс-баром.
+const STAGE_STEPS = [
+    ['downloading', 'Скачивание'],
+    ['transcribing', 'Транскрибация'],
+    ['analyzing', 'Анализ'],
+    ['rendering', 'Рендеринг'],
+    ['done', 'Готово'],
+];
+
+// Визуальный чек-лист этапов: пройденные получают галочку, текущий подсвечен.
+// Этапы до downloading (queued и т.п.) ничего не подсвечивают.
+function updateStageTracker(stageKey) {
+    const tracker = document.getElementById('stage-tracker');
+    if (!tracker || !stageKey) return;
+    if (!tracker.childElementCount) {
+        for (const [, label] of STAGE_STEPS) {
+            const li = document.createElement('li');
+            li.className = 'stage-step';
+            const dot = document.createElement('span');
+            dot.className = 'stage-dot';
+            const text = document.createElement('span');
+            text.className = 'stage-label';
+            text.textContent = label;
+            li.append(dot, text);
+            tracker.appendChild(li);
+        }
+    }
+    const cur = STAGE_STEPS.findIndex(([key]) => key === stageKey);
+    [...tracker.children].forEach((li, i) => {
+        li.classList.toggle('stage-done', i < cur);
+        li.classList.toggle('stage-active', i === cur);
+        if (i < cur) li.querySelector('.stage-dot').textContent = '✓';
+    });
+}
+
 // Every field the server persists. Same names on both sides so save/restore
 // stays a straight loop rather than a hand-maintained mapping.
 const SETTING_FIELDS = [
@@ -53,6 +88,35 @@ const SECRET_MASK = '••••••••';
 // Secret fields whose placeholder turns into a mask hint once a key is stored
 // server-side (value stays empty so nothing readable reaches the DOM).
 const SECRET_FIELDS = new Set(['muapi_key', 'openai_key', 'gemini_key', 'nim_key']);
+
+// Снимок последних сохранённых настроек: если текущие значения отличаются,
+// на кнопке «Сохранить настройки» горит точка — напоминание, что правки уйдут,
+// если закрыть страницу, не сохранив.
+let savedSnapshot = null;
+
+function snapshotSettings() {
+    const snap = {};
+    for (const field of SETTING_FIELDS) {
+        const el = document.getElementById(field);
+        if (!el) continue;
+        snap[field] = el.type === 'checkbox' ? (el.checked ? '1' : '0') : String(el.value);
+    }
+    return snap;
+}
+
+function refreshDirty() {
+    if (!savedSnapshot) return;
+    const cur = snapshotSettings();
+    const dirty = Object.keys(cur).some(k => cur[k] !== savedSnapshot[k]);
+    const btn = document.getElementById('save-settings-btn');
+    if (btn) btn.classList.toggle('is-dirty', dirty);
+}
+
+// Вызывается inline-скриптом сохранения настроек в index.html после успеха.
+window.markSettingsSaved = () => {
+    savedSnapshot = snapshotSettings();
+    refreshDirty();
+};
 
 let timerHandle = null;
 let activeJobId = null;          // job whose SSE stream is being followed
@@ -81,14 +145,24 @@ function showToast(message, type = 'info', ms = null) {
     closeBtn.className = 'toast-close';
     closeBtn.setAttribute('aria-label', 'Закрыть');
     closeBtn.textContent = '×';
+    let t1 = null;
+    let t2 = null;
     const dismiss = () => {
+        if (t1) clearTimeout(t1);
+        if (t2) clearTimeout(t2);
         el.remove();
     };
     closeBtn.addEventListener('click', dismiss);
-    el.append(text, closeBtn);
+    // Полоса обратного отсчёта показывает, сколько тост ещё провисит;
+    // клик по самому тосту тоже закрывает его, не только крестик.
+    const bar = document.createElement('div');
+    bar.className = 'toast-progress';
+    bar.style.animationDuration = `${timeout}ms`;
+    el.append(text, closeBtn, bar);
     root.appendChild(el);
-    setTimeout(() => el.classList.add('toast-out'), Math.max(0, timeout - 300));
-    setTimeout(dismiss, timeout);
+    el.addEventListener('click', (e) => { if (e.target !== closeBtn) dismiss(); });
+    t1 = setTimeout(() => el.classList.add('toast-out'), Math.max(0, timeout - 300));
+    t2 = setTimeout(dismiss, timeout);
 }
 window.showToast = showToast;
 
@@ -115,7 +189,10 @@ function setProgress(percent, stageText) {
     if (typeof percent === 'number') {
         progressFill.style.width = `${percent}%`;
         const bar = progressFill.closest('.progress-bar');
-        if (bar) bar.setAttribute('aria-valuenow', String(Math.round(percent)));
+        if (bar) {
+            bar.setAttribute('aria-valuenow', String(Math.round(percent)));
+            bar.classList.toggle('is-running', percent < 100);
+        }
     }
 }
 
@@ -248,6 +325,8 @@ async function restoreSettings() {
     if (saved.url && !queueUrlInput.value) queueUrlInput.value = saved.url;
     updateVisibleApiGroups();
     updateLocalFileVisibility();
+    savedSnapshot = snapshotSettings();
+    refreshDirty();
 }
 
 function applyFieldValue(el, value) {
@@ -545,6 +624,8 @@ async function addToQueue(url) {
 // ---------- Review mode ----------
 let reviewShorts = [];
 let reviewIndex = 0;
+// Кнопки текущей карточки — нужны шорткатам (S/Del/→), чтобы не искать их по DOM.
+let reviewControls = { save: null, del: null, next: null };
 
 function formatBytes(n) {
     if (n == null || isNaN(n)) return '';
@@ -556,6 +637,12 @@ function formatBytes(n) {
 
 async function fetchShortsForReview(jobId) {
     try {
+        // Skeleton сразу: пока список качается, секция не скачет из пустоты.
+        reviewSection.classList.remove('hidden');
+        reviewDone.classList.add('hidden');
+        reviewBody.classList.remove('hidden');
+        reviewCounter.textContent = '';
+        reviewBody.innerHTML = '<div class="skeleton skeleton-title"></div><div class="skeleton skeleton-video"></div><div class="skeleton skeleton-actions"></div>';
         const resp = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/shorts`);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
@@ -567,11 +654,16 @@ async function fetchShortsForReview(jobId) {
                 saved: !!s.saved || String(s.url || '').includes('/output/saved/'),
             }))
             .filter(s => s.url));
-        if (!reviewShorts.length) return;
+        if (!reviewShorts.length) {
+            // Если клипов нет, секцию прячем обратно — висящий скелетон врёт.
+            reviewSection.classList.add('hidden');
+            return;
+        }
         reviewIndex = 0;
         openReview();
         showToast('Проверка шортов: клипы готовы', 'success');
     } catch (e) {
+        reviewSection.classList.add('hidden');
         showToast('Не удалось загрузить список клипов', 'error');
     }
 }
@@ -595,6 +687,7 @@ function closeReview() {
     // заново с сервера, чтобы карточки не висели с устаревшим url/saved.
     reviewShorts = [];
     reviewIndex = 0;
+    reviewControls = { save: null, del: null, next: null };
 }
 
 function formatDuration(sec) {
@@ -658,7 +751,7 @@ function renderReview() {
     const saveBtn = document.createElement('button');
     saveBtn.type = 'button';
     saveBtn.className = 'btn-primary';
-    saveBtn.textContent = '💾 Сохранить';
+    saveBtn.textContent = 'Сохранить';
     saveBtn.disabled = !!short.saved;
 
     const trimBtn = document.createElement('button');
@@ -676,7 +769,7 @@ function renderReview() {
     const thumbBtn = document.createElement('button');
     thumbBtn.type = 'button';
     thumbBtn.className = 'btn-secondary';
-    thumbBtn.textContent = '🖼 Обложка';
+    thumbBtn.textContent = 'Обложка';
 
     const nextBtn = document.createElement('button');
     nextBtn.type = 'button';
@@ -687,7 +780,7 @@ function renderReview() {
     const copyBtn = document.createElement('button');
     copyBtn.type = 'button';
     copyBtn.className = 'btn-secondary';
-    copyBtn.textContent = '🔗 Ссылка';
+    copyBtn.textContent = 'Ссылка';
     copyBtn.title = 'Копировать URL клипа';
     copyBtn.addEventListener('click', () => copyUrlToClipboard(short.url));
 
@@ -695,7 +788,7 @@ function renderReview() {
     rerunBtn.type = 'button';
     rerunBtn.className = 'btn-secondary';
     rerunBtn.title = 'Перезапустить с теми же настройками';
-    rerunBtn.textContent = '🔄 Ещё раз';
+    rerunBtn.textContent = 'Ещё раз';
     rerunBtn.addEventListener('click', async () => {
         rerunBtn.disabled = true;
         try {
@@ -711,6 +804,22 @@ function renderReview() {
     });
 
     actions.append(previewBtn, saveBtn, nextBtn, trimBtn, deleteBtn, thumbBtn, copyBtn, rerunBtn);
+    reviewControls = { save: saveBtn, del: deleteBtn, next: nextBtn };
+
+    // Шорткаты под кнопками — видимая подсказка, что ревью можно вести с клавиатуры.
+    const shortcuts = document.createElement('div');
+    shortcuts.className = 'review-shortcuts';
+    const SHORTCUT_HINTS = [['S', 'сохранить'], ['Del', 'удалить'], ['→', 'далее'], ['Space', 'пауза'], ['Esc', 'закрыть']];
+    for (const [key, labelText] of SHORTCUT_HINTS) {
+        const item = document.createElement('span');
+        item.className = 'shortcut-item';
+        const kbdEl = document.createElement('kbd');
+        kbdEl.textContent = key;
+        const lbl = document.createElement('span');
+        lbl.textContent = labelText;
+        item.append(kbdEl, lbl);
+        shortcuts.appendChild(item);
+    }
 
     saveBtn.addEventListener('click', async () => {
         saveBtn.disabled = true;
@@ -735,7 +844,7 @@ function renderReview() {
             if (data.aspect_ratio && /^\s*9\s*:\s*16/.test(data.aspect_ratio)) {
                 video.classList.add('review-video-vertical');
             }
-            saveBtn.textContent = '💾 Сохранено';
+            saveBtn.textContent = 'Сохранено';
             hint.textContent = 'Сохранено в output/saved/ — рефрейм и эффекты применены.';
             hint.classList.add('review-hint-saved');
             if (!badge.isConnected) meta.append(badge);
@@ -773,7 +882,7 @@ function renderReview() {
         trim.wrap.classList.toggle('hidden');
     });
 
-    reviewBody.append(meta, videoWrap, actions, hint, trim.wrap);
+    reviewBody.append(meta, videoWrap, actions, shortcuts, hint, trim.wrap);
 
     const thumbWrap = document.createElement('div');
     thumbWrap.className = 'review-thumbnail hidden';
@@ -799,7 +908,7 @@ function renderReview() {
             link.className = 'review-thumbnail-link';
             link.href = data.url;
             link.download = '';
-            link.textContent = '⬇ Скачать обложку';
+            link.textContent = 'Скачать обложку';
             thumbWrap.append(img, link);
             thumbWrap.classList.remove('hidden');
             showToast('Обложка готова', 'success');
@@ -895,9 +1004,59 @@ function finishReview() {
     reviewBody.classList.add('hidden');
     reviewCounter.textContent = '';
     reviewDone.classList.remove('hidden');
+    // Маленькая награда за пройденное ревью: что-то да сохранено.
+    if (reviewShorts.some(s => s.saved)) fireConfetti();
     // После ничего не сохранённых клипов «Скачать все» нечего качать.
     const dlAll = document.getElementById('review-download-all-btn');
     if (dlAll) dlAll.disabled = !reviewShorts.some(s => s.saved);
+}
+
+// Лёгкий конфетти-салют на канвасе поверх страницы (~1.2с). Без библиотек:
+// 90 прямоугольников с гравитацией. При prefers-reduced-motion — отключено.
+function fireConfetti() {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const canvas = document.createElement('canvas');
+    canvas.className = 'confetti-canvas';
+    document.body.appendChild(canvas);
+    const ctx = canvas.getContext('2d');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    const colors = ['#6366f1', '#818cf8', '#34d399', '#e6e8eb'];
+    const parts = [];
+    for (let i = 0; i < 90; i++) {
+        parts.push({
+            x: canvas.width / 2 + (Math.random() - 0.5) * canvas.width * 0.3,
+            y: canvas.height * 0.35 + (Math.random() - 0.5) * 60,
+            vx: (Math.random() - 0.5) * 10,
+            vy: -6 - Math.random() * 5,
+            w: 5 + Math.random() * 5,
+            h: 3 + Math.random() * 4,
+            r: Math.random() * Math.PI,
+            vr: (Math.random() - 0.5) * 0.25,
+            c: colors[i % colors.length],
+        });
+    }
+    const t0 = performance.now();
+    const frame = (now) => {
+        const dt = Math.min(50, now - (frame.prev || now)) / 16.7;
+        frame.prev = now;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        for (const p of parts) {
+            p.vy += 0.12 * dt;
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
+            p.r += p.vr * dt;
+            ctx.save();
+            ctx.translate(p.x, p.y);
+            ctx.rotate(p.r);
+            ctx.fillStyle = p.c;
+            ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+            ctx.restore();
+        }
+        if (now - t0 < 1200) requestAnimationFrame(frame);
+        else canvas.remove();
+    };
+    requestAnimationFrame(frame);
 }
 
 // ---------- Wiring ----------
@@ -989,10 +1148,29 @@ function sortShortsForReview(shorts) {
     });
 }
 
-// Escape закрывает ревью, только когда оно видимо.
+// Шорткаты ревью: только когда ревью видимо и фокус не в поле ввода/плеере.
 document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !reviewSection.classList.contains('hidden')) {
-        closeReview();
+    if (reviewSection.classList.contains('hidden')) return;
+    if (e.key === 'Escape') { closeReview(); return; }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const t = e.target;
+    if (t && (t.closest('input, textarea, select, video, [contenteditable="true"]'))) return;
+    switch (e.key) {
+        case 's': case 'S': case 'ы': case 'Ы':
+            if (reviewControls.save && !reviewControls.save.disabled) {
+                e.preventDefault();
+                reviewControls.save.click();
+            }
+            break;
+        case 'Delete':
+            if (reviewControls.del && !reviewControls.del.disabled) reviewControls.del.click();
+            break;
+        case 'ArrowRight': case ' ':
+            if (reviewControls.next && !reviewControls.next.disabled) {
+                e.preventDefault();
+                reviewControls.next.click();
+            }
+            break;
     }
 });
 
@@ -1110,6 +1288,7 @@ function followJobProgress(jobId) {
         const pct = (typeof update.progress === 'number') ? update.progress : null;
         if (update.stage || pct !== null) {
             setProgress(pct, stageLabels[update.stage] || update.stage || '');
+            if (update.stage) updateStageTracker(update.stage);
         }
         _setElapsedWithEta(update.elapsed, pct);
         if (update.result) {
@@ -1133,6 +1312,18 @@ updateMusicVolumeLabel();
 updateMusicFileLabel();
 restoreSettings();
 ensureResultsEmptyState();
+
+// Переключатель темы: инвертирует то, что выставил anti-FOUC скрипт в <head>.
+wireClick('theme-toggle', () => {
+    const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem('theme', next); } catch { /* приватный режим */ }
+});
+
+// Dirty-точка: следим за любыми правками полей, не привязываясь к форме —
+// часть контролов живёт вне #generate-form.
+document.addEventListener('input', refreshDirty);
+document.addEventListener('change', refreshDirty);
 resumeActiveJob().then(async (job) => {
     if (!job) {
         // Нет активной задачи — может, есть готовый результат?
@@ -1142,6 +1333,7 @@ resumeActiveJob().then(async (job) => {
             fetchShortsForReview(doneJob.job_id);
             pipelineLog.textContent = '';
             setProgress(null, 'Готово.');
+            updateStageTracker('done');
         }
         return;
     }
@@ -1153,6 +1345,7 @@ resumeActiveJob().then(async (job) => {
     setProcessingUI(true);
     setProgress(typeof job.progress === 'number' ? job.progress : null,
                 stageLabels[job.stage] || 'Обработка…');
+    if (job.stage) updateStageTracker(job.stage);
     pipelineLog.textContent = '';
     startTimer(job.started_at ? job.started_at * 1000 : Date.now());
     followJobProgress(job.job_id);
@@ -1201,6 +1394,7 @@ form.addEventListener('submit', async (e) => {
     errorSection.classList.add('hidden');
     progressSection.classList.remove('hidden');
     setProgress(0, 'Запуск…');
+    updateStageTracker('starting');
     pipelineLog.textContent = '';
     startTimer(Date.now());
 
@@ -1253,6 +1447,7 @@ form.addEventListener('submit', async (e) => {
             const pct = (typeof update.progress === 'number') ? update.progress : null;
             if (update.stage || pct !== null) {
                 setProgress(pct, stageLabels[update.stage] || update.stage || '');
+                if (update.stage) updateStageTracker(update.stage);
             }
             _setElapsedWithEta(update.elapsed, pct);
 
@@ -1286,6 +1481,7 @@ async function pollStatus(jobId) {
 
             if (typeof job.progress === 'number') {
                 setProgress(job.progress, stageLabels[job.stage] || 'Обработка…');
+                if (job.stage) updateStageTracker(job.stage);
             }
             if (job.status === 'completed' && job.result) {
                 finishRun();
@@ -1360,6 +1556,9 @@ function displayResults(result, elapsed) {
         const score = document.createElement('div');
         score.className = 'result-score';
         score.textContent = short.score;
+        // Цветовая подсказка силы виральности: высокий/средний/низкий балл.
+        const sc = parseFloat(short.score);
+        if (isFinite(sc)) score.classList.add(sc >= 85 ? 'score-high' : (sc < 60 ? 'score-low' : 'score-mid'));
 
         header.append(titleWrap, score);
 
@@ -1395,7 +1594,7 @@ function displayResults(result, elapsed) {
             const copyLink = document.createElement('button');
             copyLink.type = 'button';
             copyLink.className = 'btn-download btn-secondary';
-            copyLink.textContent = '🔗 Ссылка';
+            copyLink.textContent = 'Ссылка';
             copyLink.title = 'Копировать URL клипа';
             copyLink.addEventListener('click', () => copyUrlToClipboard(short.clip_url));
 
