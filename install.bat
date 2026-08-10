@@ -23,6 +23,26 @@ if not defined PY (
 for /f "tokens=2 delims= " %%v in ('!PY! --version 2^>^&1') do set PYVER=%%v
 echo Found Python !PYVER!
 
+REM Require Python >= 3.10 (pattern matches 3.9 / 3.8 / ... in the "minor" slot)
+echo !PYVER! | findstr /r "^3\.[0-9]" >nul
+if not errorlevel 1 (
+    for /f "tokens=2 delims=." %%m in ("!PYVER!") do (
+        if %%m LSS 10 (
+            echo [ERROR] Python 3.10 or newer is required, found !PYVER!.
+            echo         Install a newer Python from https://www.python.org/downloads/
+            pause
+            exit /b 1
+        )
+    )
+) else (
+    echo !PYVER! | findstr /r "^[12]\." >nul
+    if not errorlevel 1 (
+        echo [ERROR] Python 3.10 or newer is required, found !PYVER!.
+        pause
+        exit /b 1
+    )
+)
+
 REM --- 2. Virtual environment ---
 if not exist venv\Scripts\python.exe (
     echo.

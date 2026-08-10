@@ -11,5 +11,14 @@ output/
 .DS_Store
 NIGHT_SESSION_NOTES.md
 .claude/
+.superpowers/
 TASKS.txt
 TASKS2.txt
+
+# local artifacts / scratch (never publish)
+tmp_*/
+пример*.png
+TikTok_Заработок.md
+claudeset.bat
+cookies.txt
+*.cookies.txt

@@ -56,7 +56,8 @@ if ! "$VPY" -m pip install -r requirements-local.txt; then
 fi
 
 # Keep yt-dlp current — YouTube changes often break older releases ("Sign in to confirm you're not a bot").
-"$VPY" -m pip install --upgrade yt-dlp
+# Non-fatal: an offline box can stay on the pinned version from requirements-*.txt.
+"$VPY" -m pip install --upgrade yt-dlp || echo "[WARN] yt-dlp upgrade failed (offline?) — keeping the installed version."
 
 # --- 5. .env ---
 if [ ! -f .env ] && [ -f .env.example ]; then

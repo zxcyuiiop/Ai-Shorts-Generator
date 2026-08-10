@@ -23,7 +23,13 @@ git clone https://github.com/zxcyuiiop/Ai-Shorts-Generator.git
 cd Ai-Shorts-Generator
 ```
 
-### 2. Install + run
+### 2. Requirements
+
+- **Python 3.10+** (both installers check this).
+- **ffmpeg + ffprobe** on `PATH` — required for local mode and clip saving. The `install.sh`/`install.bat` scripts warn if it is missing; install via your package manager (`sudo apt install ffmpeg`, `brew install ffmpeg`, or a Windows build).
+- An **NVIDIA GPU** is optional — the pipeline auto-detects `h264_nvenc`/`hevc_nvenc` and falls back to CPU encoding (`FFMPEG_ENCODER`, `FORCE_CPU_FFMPEG` env vars).
+
+### 3. Install + run
 
 #### Windows
 
@@ -36,6 +42,7 @@ start_gui.bat
 ```
 
 Open http://localhost:5000 in your browser.
+The launcher refuses to start if `venv/` is missing and tells you to run `install.bat` first — it never silently installs dependencies outside the venv.
 
 #### Linux / macOS
 
@@ -67,7 +74,17 @@ YouTube sometimes blocks anonymous downloads. Fix it one of three ways (document
 
 ## Configuration
 
-Copy `.env.example` to `.env` and fill in the keys you need. All effects (blur, watermark, music, captions, thumbnails) are env-gated and documented there; per-request overrides are also exposed in the GUI settings panel (`settings.local.json`).
+Copy `.env.example` to `.env` and fill in the keys you need. All effects (blur, watermark, silence cuts, music, captions, thumbnails) are env-gated and documented there; per-request overrides are also exposed in the GUI settings panel (persisted to `settings.local.json`).
+
+**Watermark asset.** The TikTok-style video watermark (`OVERLAY_ENABLED=1`) needs a `TIKTOK1.mov` file in the repo root, and that file is **not** shipped in the repository (it's a ~30 MB asset). Drop your own transparent-background `.mov` overlay there, or turn the watermark off with `OVERLAY_ENABLED=0`.
+
+**GUI server.** `app.py` binds to `0.0.0.0:5000` by default so the panel is reachable from other devices on your LAN — anyone on the network can use it. To restrict it to this machine set `GUI_HOST=127.0.0.1`; to require an access token for all `/api/*` calls set `GUI_TOKEN=<secret>` and pass it in the `X-Api-Token` header or `?token=` query param (the web UI picks it up automatically).
+
+## Documentation
+
+- [`GUI_README.md`](GUI_README.md) — full GUI guide (in Russian): review flow, effects knobs, API endpoints, troubleshooting.
+- [`OLLAMA_NIM_GUIDE.md`](OLLAMA_NIM_GUIDE.md) — using a local Ollama or NVIDIA NIM endpoint as the highlight-picking LLM.
+- [`LICENSE`](LICENSE) — MIT.
 
 ## Tests
 
