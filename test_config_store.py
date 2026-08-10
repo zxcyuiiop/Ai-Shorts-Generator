@@ -100,8 +100,8 @@ def test_falsy_and_empty_overrides():
           config.env(OVERRIDE_KEY, "1") == "0", config.env(OVERRIDE_KEY, "1"))
     reset()
 
-    # A genuinely-empty override is dropped by set_overrides's `if v`, so env()
-    # falls through to the next layer (the process env here).
+    # A genuinely-empty override is dropped by set_overrides's None/"" filter, so
+    # env() falls through to the next layer (the process env here).
     os.environ[OVERRIDE_KEY] = "fallback-env"
     config.set_overrides({OVERRIDE_KEY: ""})   # dropped on bind
     check("empty-string override drops to the next layer",
