@@ -1365,7 +1365,9 @@ function displayResults(result, elapsed) {
 
         const meta = document.createElement('div');
         meta.className = 'result-meta';
-        meta.textContent = `${short.start_time.toFixed(1)}с → ${short.end_time.toFixed(1)}с`;
+        const duration = (typeof short.end_time === 'number' && typeof short.start_time === 'number')
+            ? ` · ${(short.end_time - short.start_time).toFixed(1)}с` : '';
+        meta.textContent = `${short.start_time.toFixed(1)}с → ${short.end_time.toFixed(1)}с${duration}`;
 
         const hook = document.createElement('div');
         hook.className = 'result-hook';
@@ -1390,7 +1392,14 @@ function displayResults(result, elapsed) {
             download.download = `short_${index + 1}.mp4`;
             download.target = '_blank';
 
-            card.append(video, download);
+            const copyLink = document.createElement('button');
+            copyLink.type = 'button';
+            copyLink.className = 'btn-download btn-secondary';
+            copyLink.textContent = '🔗 Ссылка';
+            copyLink.title = 'Копировать URL клипа';
+            copyLink.addEventListener('click', () => copyUrlToClipboard(short.clip_url));
+
+            card.append(video, download, copyLink);
         } else {
             const failed = document.createElement('div');
             failed.className = 'result-failed';

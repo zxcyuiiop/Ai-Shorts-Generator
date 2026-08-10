@@ -15,6 +15,7 @@ import re
 from typing import Callable, Dict, List, Optional
 
 from . import muapi
+from .config import env
 
 
 LLMFn = Callable[[str], str]
@@ -130,11 +131,11 @@ def get_length_preset(name: Optional[str]) -> Dict:
     )
 
 
-CHUNK_SIZE_SECONDS = 1200       # 20-min chunks for long videos
-LONG_VIDEO_THRESHOLD = 1800     # chunk videos longer than 30 min
-CHUNK_OVERLAP_SECONDS = 60
+CHUNK_SIZE_SECONDS = int(env("CHUNK_SIZE_SECONDS", "1200") or 1200)       # 20-min chunks for long videos
+LONG_VIDEO_THRESHOLD = int(env("LONG_VIDEO_THRESHOLD", "1800") or 1800)     # chunk videos longer than 30 min
+CHUNK_OVERLAP_SECONDS = int(env("CHUNK_OVERLAP_SECONDS", "60") or 60)
 GPT_CALL_TIMEOUT_SECONDS = 300  # cap LLM polls at 5 min — a wedged call should fail fast
-MAX_HIGHLIGHT_API_ATTEMPTS = 2
+MAX_HIGHLIGHT_API_ATTEMPTS = int(env("MAX_HIGHLIGHT_API_ATTEMPTS", "2") or 2)
 
 
 def call_muapi_llm(prompt: str) -> str:
