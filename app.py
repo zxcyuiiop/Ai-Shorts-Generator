@@ -160,6 +160,9 @@ def _base_message(msg):
     """First line of str(e) with any absolute paths from this machine stripped
     out -- the client never learns the server's directory layout."""
     line = re.sub(r"(\w:\\[^\s\"']+|/(?:[\w.-]+/)+[\w.~-]+)", "…", (msg or "").strip())
+    # URLs in errors can carry secrets in the query string (api keys, tokens) —
+    # keep the origin+path, drop everything from the first '?'.
+    line = re.sub(r"\?[^\s\"']*", "?…", line)
     return line.splitlines()[0][:300].strip()
 
 
@@ -1303,6 +1306,11 @@ def save_short():
                 if draft_target:
                     break
             break
+    # No job claims this file → it isn't a draft we produced (stale foreign
+    # file in output/). Refuse: save applies effects only to known drafts,
+    # and it deletes the source afterwards.
+    if job is None:
+        return jsonify({"error": "clip is not a draft of any known job"}), 404
     requested = (data.get("aspect_ratio") or "").strip()
     aspect = requested or ((job or {}).get("aspect_ratio") or "").strip() \
         or draft_target or "9:16"

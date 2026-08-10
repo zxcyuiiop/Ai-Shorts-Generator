@@ -142,7 +142,7 @@
                     <div class="form-row">
                         <div class="form-group">
                             <label for="num_clips">Количество клипов</label>
-                            <input type="number" id="num_clips" name="num_clips" value="3" min="1" max="10">
+                            <input type="number" id="num_clips" name="num_clips" value="3" min="1" max="20">
                         </div>
 
                         <div class="form-group">
@@ -594,6 +594,11 @@
                 music_enabled: document.getElementById('music_enabled').checked ? '1' : '0',
                 music_file: document.getElementById('music_file').value,
                 music_volume: document.getElementById('music_volume').value,
+                captions_enabled: document.getElementById('captions_enabled').checked ? '1' : '0',
+                caption_style: document.getElementById('caption_style').value,
+                face_track: document.getElementById('face_track').checked ? '1' : '0',
+                caption_position: document.getElementById('caption_position').value,
+                caption_margin_v: document.getElementById('caption_margin_v').value,
             };
             const payload = {};
             for (const [k, v] of data.entries()) payload[k] = v;

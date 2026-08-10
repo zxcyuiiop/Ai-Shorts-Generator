@@ -265,6 +265,8 @@ function applyFieldValue(el, value) {
 
 // Загрузка с прогрессом: fetch не отдаёт upload progress, поэтому XHR.
 // Возвращает body ответа как JSON; ошибки бросает наружу.
+// Сетевая ошибка помечена `isNetworkError`, чтобы вызывающий мог отличить
+// её от серверной HTTP-ошибки и не отправлять файл повторно.
 function uploadFileWithProgress(endpoint, formData, onProgress) {
     return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
@@ -280,7 +282,11 @@ function uploadFileWithProgress(endpoint, formData, onProgress) {
             if (xhr.status >= 200 && xhr.status < 300) resolve(data);
             else reject(new Error(data.error || `Upload failed (HTTP ${xhr.status})`));
         };
-        xhr.onerror = () => reject(new Error('Upload failed (network error)'));
+        xhr.onerror = () => {
+            const err = new Error('Upload failed (network error)');
+            err.isNetworkError = true;
+            reject(err);
+        };
         xhr.send(formData);
     });
 }
@@ -309,8 +315,9 @@ async function resolveSource() {
                 uploadProgress.textContent = `Загрузка ${pct}%`;
             });
         } catch (e) {
-            // Если XHR-путь неожиданно упал, не теряем загрузку целиком.
-            if (!(e instanceof TypeError) && !/network error/i.test(e.message)) {
+            // Fallback только при реальной сетевой ошибке XHR: если сервер
+            // ответил HTTP-ошибкой, повторный fetch отправил бы файл снова.
+            if (!e.isNetworkError && !(e instanceof TypeError)) {
                 uploadProgress && uploadProgress.classList.add('hidden');
                 throw e;
             }
@@ -504,7 +511,7 @@ async function addToQueue(url) {
         source_type: 'url',
         mode,
         llm_provider: provider,
-        num_clips: clampNumberInput('num_clips', 1, 10) ?? 3,
+        num_clips: clampNumberInput('num_clips', 1, 20) ?? 3,
         clip_length: document.getElementById('clip_length').value,
         aspect_ratio: document.getElementById('aspect_ratio').value,
         format: document.getElementById('format').value,
@@ -862,6 +869,9 @@ function finishReview() {
     reviewBody.classList.add('hidden');
     reviewCounter.textContent = '';
     reviewDone.classList.remove('hidden');
+    // После ничего не сохранённых клипов «Скачать все» нечего качать.
+    const dlAll = document.getElementById('review-download-all-btn');
+    if (dlAll) dlAll.disabled = !reviewShorts.some(s => s.saved);
 }
 
 // ---------- Wiring ----------
@@ -939,7 +949,7 @@ window.addEventListener('beforeunload', (e) => {
 
 // Клэмпы с обратной связью для числовых полей.
 const CLAMP_FIELDS = [
-    ['num_clips', 1, 10],
+    ['num_clips', 1, 20],
     ['caption_margin_v', 0, 1200],
     ['overlay_margin', 0, 200],
     ['music_volume', 0, 100],
@@ -996,6 +1006,23 @@ async function resumeActiveJob() {
     }
 }
 
+// Job завершился до перезагрузки — поднимаем готовый результат, чтобы
+// страница не выглядела мёртвой.
+async function resumeLastCompletedJob() {
+    try {
+        const resp = await fetch('/api/jobs');
+        if (!resp.ok) return null;
+        const data = await resp.json();
+        const jobs = data.jobs || [];
+        const done = jobs.filter(j => j.status === 'done' && j.has_result);
+        // sort by finished_at desc if present, else take the last in list
+        done.sort((a, b) => (b.finished_at || 0) - (a.finished_at || 0));
+        return done[0] || null;
+    } catch {
+        return null;
+    }
+}
+
 function followJobProgress(jobId) {
     const es = new EventSource(`/api/progress/${jobId}`);
     restoredEventSource = es;
@@ -1037,8 +1064,18 @@ updateMusicVolumeLabel();
 updateMusicFileLabel();
 restoreSettings();
 ensureResultsEmptyState();
-resumeActiveJob().then((job) => {
-    if (!job) return;
+resumeActiveJob().then(async (job) => {
+    if (!job) {
+        // Нет активной задачи — может, есть готовый результат?
+        const doneJob = await resumeLastCompletedJob();
+        if (doneJob) {
+            displayResults(doneJob.result || {}, doneJob.elapsed);
+            fetchShortsForReview(doneJob.job_id);
+            pipelineLog.textContent = '';
+            setProgress(null, 'Готово.');
+        }
+        return;
+    }
     activeJobId = job.job_id;
     progressSection.classList.remove('hidden');
     resultsSection.classList.add('hidden');
@@ -1048,7 +1085,7 @@ resumeActiveJob().then((job) => {
     setProgress(typeof job.progress === 'number' ? job.progress : null,
                 stageLabels[job.stage] || 'Обработка…');
     pipelineLog.textContent = '';
-    startTimer(Date.now());
+    startTimer(job.started_at ? job.started_at * 1000 : Date.now());
     followJobProgress(job.job_id);
     pollQueue();
 });
@@ -1106,7 +1143,7 @@ form.addEventListener('submit', async (e) => {
             source_type,
             mode,
             llm_provider: provider,
-            num_clips: clampNumberInput('num_clips', 1, 10) ?? 3,
+            num_clips: clampNumberInput('num_clips', 1, 20) ?? 3,
             clip_length: document.getElementById('clip_length').value,
             aspect_ratio: document.getElementById('aspect_ratio').value,
             format: document.getElementById('format').value,
@@ -1194,6 +1231,8 @@ async function pollStatus(jobId) {
                 showError(job.error || 'Генерация не удалась');
                 return;
             }
+            // Пока задача в очереди/на выполнении — не считаем это сбоем.
+            failedAttempts = 0;
         } catch (e) {
             console.error('Poll error:', e);
             failedAttempts += 1;

@@ -244,6 +244,30 @@ def check_humanize():
           "Файл не найден" in msg and r"E:\Desktop\secret" not in msg,
           f"msg={msg}")
 
+    msg = webapp._humanize_error(RuntimeError(
+        "ffmpeg failed: https://api.svc.test/x?token=topsecret&y=1"))
+    check("humanize: query string stripped (no secrets)",
+          "topsecret" not in msg and "?…" in msg, f"msg={msg}")
+
+
+def check_save_short_guard():
+    # A foreign file in output/ that no job claims must be refused (404),
+    # never modified or deleted by /api/shorts/save.
+    out_dir = webapp.LOCAL_OUTPUT_DIR
+    os.makedirs(out_dir, exist_ok=True)
+    fpath = os.path.join(out_dir, "foreign_guard_test.mp4")
+    with open(fpath, "wb") as f:
+        f.write(b"dummy")
+    try:
+        c = webapp.app.test_client()
+        r = c.post("/api/shorts/save", json={"url": "/output/foreign_guard_test.mp4"})
+        check("save: foreign file in output/ rejected with 404", r.status_code == 404,
+              f"status={r.status_code} body={r.get_json()}")
+        check("save: foreign file untouched", os.path.isfile(fpath))
+    finally:
+        if os.path.exists(fpath):
+            os.remove(fpath)
+
 
 def check_upload_cap():
     real_cap = webapp.MAX_UPLOAD_BYTES
@@ -318,6 +342,7 @@ def main():
         check_token()
         check_terminal_helper()
         check_humanize()
+        check_save_short_guard()
         check_upload_cap()
         check_settings_store()
     finally:
