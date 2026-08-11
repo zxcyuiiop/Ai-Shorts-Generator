@@ -240,8 +240,10 @@ def apply_watermark_pause(in_path: str, out_path: str, image_path: str,
     except (TypeError, ValueError):
         scale_pct = 35.0
     scale_pct = max(5.0, min(90.0, scale_pct))
-    # Even pixel width: h.264/yuv420p rejects odd dimensions, and an odd
-    # watermark width would make scale= fail the whole graph.
+    if is_video and "WATERMARK_SCALE" not in os.environ:
+        # A video banner defaults to full frame width with no margin — the
+        # animation should read as a banner moment, not a corner sticker.
+        scale_pct = 100.0
     wm_w = max(2, 2 * int(round(width * (scale_pct / 100.0) / 2.0)))
 
     # Freeze budget in SOURCE frames: loop=size is a count, not a duration.

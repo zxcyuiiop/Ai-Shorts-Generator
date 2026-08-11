@@ -395,10 +395,6 @@ function collectProcessingSettings() {
     const titleSize = titleSizeRaw === '' ? null : clampNumberInput('title_font_size', 24, 200);
     const wmAtRaw = document.getElementById('watermark_at_sec').value;
     const wmAt = wmAtRaw === '' ? null : clampNumberInput('watermark_at_sec', 0, 600);
-    const wmDurRaw = document.getElementById('watermark_duration_sec').value;
-    const wmDur = wmDurRaw === '' ? null : clampNumberInput('watermark_duration_sec', 0.3, 10);
-    const wmScaleRaw = document.getElementById('watermark_scale').value;
-    const wmScale = wmScaleRaw === '' ? null : clampNumberInput('watermark_scale', 5, 90);
     return {
         silence_cut: !!document.getElementById('silence_cut').checked,
         blur_bars: !!document.getElementById('blur_bars').checked,
@@ -415,8 +411,6 @@ function collectProcessingSettings() {
         title_font_size: titleSize,
         watermark_enabled: !!document.getElementById('watermark_enabled').checked,
         watermark_at_sec: wmAt,
-        watermark_duration_sec: wmDur,
-        watermark_scale: wmScale,
         watermark_file: document.getElementById('watermark_file').value || '',
     };
 }
@@ -1258,8 +1252,6 @@ const CLAMP_FIELDS = [
     ['title_y_from_bottom', 100, 1500],
     ['title_font_size', 24, 200],
     ['watermark_at_sec', 0, 600],
-    ['watermark_duration_sec', 0.3, 10],
-    ['watermark_scale', 5, 90],
 ];
 CLAMP_FIELDS.forEach(([id, min, max]) => wireChange(id, () => clampNumberInput(id, min, max)));
 
@@ -1328,7 +1320,7 @@ function updateWatermarkFileLabel() {
 wireClick('watermark_upload_btn', async () => {
     const uploadInput = document.getElementById('watermark_upload');
     const file = uploadInput.files && uploadInput.files[0];
-    if (!file) { showToast('Выберите изображение для вотермарки', 'error'); return; }
+    if (!file) { showToast('Выберите изображение или видео для вотермарки', 'error'); return; }
     const btn = document.getElementById('watermark_upload_btn');
     btn.disabled = true;
     try {
@@ -1338,7 +1330,7 @@ wireClick('watermark_upload_btn', async () => {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok || !data.ok) throw new Error(data.error || `HTTP ${resp.status}`);
         document.getElementById('watermark_file').value = data.path || '';
-        updateWatermarkFileLabel();
+        updateWatermarkFileLabel(data.filename || file.name);
         uploadInput.value = '';  // сброс, чтобы повторный выбор того же файла снова триггернул change
         showToast(`Вотермарка загружена: ${data.filename || file.name}`, 'success');
     } catch (e) {

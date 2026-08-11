@@ -931,12 +931,13 @@ def upload_music():
 WATERMARK_UPLOAD_DIR = os.path.join(os.path.abspath(LOCAL_OUTPUT_DIR), "uploads")
 # Must stay in sync with watermark.WATERMARK_EXTENSIONS -- the finalize stage
 # is what reads this file, so a type the module rejects must not reach it.
-ALLOWED_WATERMARK_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+ALLOWED_WATERMARK_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp",
+                                ".mp4", ".mov", ".webm", ".mkv"}
 
 
 @app.route("/api/upload/watermark", methods=["POST"])
 def upload_watermark():
-    """Accept a user watermark image and save it under output/uploads/.
+    """Accept a user watermark image or video banner under output/uploads/.
 
     Unlike music uploads the name is normalized to ``watermark.<ext>``: one
     GUI slot means one current image, and the persisted WATERMARK_FILE path
