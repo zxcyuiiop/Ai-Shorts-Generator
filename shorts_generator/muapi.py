@@ -29,7 +29,7 @@ def submit(endpoint: str, payload: Dict[str, Any], retries: int = 3) -> str:
     last_err: Optional[Exception] = None
     for _ in range(retries):
         try:
-            resp = requests.post(url, json=payload, headers=_headers(), timeout=120)
+            resp = requests.post(url, json=payload, headers=_headers(), timeout=360)
             if resp.status_code >= 400:
                 raise MuAPIError(f"{endpoint} submit failed [{resp.status_code}]: {resp.text}")
             data = resp.json()
@@ -49,7 +49,7 @@ def fetch_result(request_id: str, retries: int = 3) -> Dict[str, Any]:
     last_err: Optional[Exception] = None
     for _ in range(retries):
         try:
-            resp = requests.get(url, headers=_headers(), timeout=90)
+            resp = requests.get(url, headers=_headers(), timeout=360)
             if resp.status_code >= 400:
                 raise MuAPIError(f"poll failed [{resp.status_code}]: {resp.text}")
             return resp.json()
