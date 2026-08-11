@@ -2,6 +2,41 @@
 
 Turn any long YouTube video or local file into ready-to-publish short clips. The app transcribes the speech, asks an LLM for the most viral moments, cuts the best segments, and lets you polish them in a built-in review panel.
 
+## Desktop app (PySide6)
+
+The project is transitioning to a **new native desktop interface** built with PySide6 (QtWidgets — no QML). It drives the same `shorts_generator` pipeline and covers the basics:
+
+- pick a **YouTube link** or a **local video file**;
+- configure **number of clips, clip length, aspect ratio and language**;
+- toggle **effects** — karaoke subtitles, blurred-background bars, background music, watermark, silence (pause) cut-out;
+- run generation with a **live progress log**, then **review and save** results to `output/`.
+
+### Run it (Windows)
+
+```
+run_desktop.bat
+```
+
+The launcher reuses the project `venv/` (created by `install.bat`), auto-installs `requirements-desktop.txt` if PySide6 is missing, and starts `desktop.py` via `pythonw.exe` (no console window). Manual start also works:
+
+```
+venv\Scripts\python.exe desktop.py
+```
+
+### Desktop install
+
+PySide6 needs to be in the venv alongside the regular pipeline dependencies:
+
+```
+venv\Scripts\python.exe -m pip install -r requirements-local.txt -r requirements-desktop.txt
+```
+
+---
+
+## Web UI (legacy)
+
+The original interface is a **legacy web GUI** (Flask, `app.py`, port 5000) with three pages: `/` Generate, `/history`, `/settings`. It is fully functional and kept as-is, but the native desktop app above is where new UI work happens.
+
 ## Features
 
 - **Two pipelines** — fully remote via [MuAPI](https://muapi.ai) (hosted, nothing to install) or fully local: yt-dlp download → faster-whisper transcription → LLM highlight picking (OpenAI / Gemini / Ollama / NVIDIA NIM) → ffmpeg/OpenCV cutting
@@ -15,7 +50,8 @@ Turn any long YouTube video or local file into ready-to-publish short clips. The
 - **Face tracking** — OpenCV-based reframe keeps the speaker in frame during the vertical crop (env switchable)
 - **Cover thumbnails** — one click grabs a representative frame and overlays the title as a JPEG
 - **Saved / discard flow** — «Сохранить» applies everything and moves the clip to `output/saved/`; «Удалить» removes it
-- **Web GUI** (Flask, port 5000) split into three pages: `/` Generate, `/history`, `/settings` (API keys + effect knobs)
+- **Web GUI** (legacy, Flask, port 5000) split into three pages: `/` Generate, `/history`, `/settings` (API keys + effect knobs)
+- **Desktop GUI** — new native PySide6 interface (see "Desktop app (PySide6)" above)
 - **CLI** — same pipeline from the command line for scripting
 
 ## Quick start
@@ -39,11 +75,13 @@ cd Ai-Shorts-Generator
 
 Double-click `install.bat` (or run it from a terminal). It checks Python 3.10+, creates a local `.venv`-style `venv/`, installs everything, and can optionally copy `.env.example` → `.env` so you can fill in your API keys.
 
-Then launch the web UI:
+Then launch the legacy web UI:
 
 ```
 start_gui.bat
 ```
+
+(For the new native interface, run `run_desktop.bat` instead — see "Desktop app (PySide6)" at the top.)
 
 Open http://localhost:5000 in your browser.
 The launcher refuses to start if `venv/` is missing and tells you to run `install.bat` first — it never silently installs dependencies outside the venv.

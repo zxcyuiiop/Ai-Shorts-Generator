@@ -1,0 +1,10 @@
+# Dependencies for the PySide6 desktop app (run_desktop.bat / desktop.py).
+#
+# Устанавливается вместе с requirements.txt и requirements-local.txt —
+# десктоп-интерфейсу нужен тот же пакетный бэкенд (пайплайн, LLM-клиенты,
+# ffmpeg/yt-dlp обвязка), здесь только сам GUI-фреймворк.
+#
+# Full desktop install (Windows):
+#   venv\Scripts\python.exe -m pip install -r requirements-local.txt -r requirements-desktop.txt
+
+PySide6>=6.5,<7
