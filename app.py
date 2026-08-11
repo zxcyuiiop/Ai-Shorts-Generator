@@ -23,7 +23,7 @@ if hasattr(sys.stderr, "reconfigure"):
 from flask import Flask, render_template, request, jsonify, Response, send_from_directory
 from werkzeug.utils import secure_filename
 
-from shorts_generator import generate_shorts, settings_store
+from shorts_generator import generate_shorts, history, settings_store
 from shorts_generator.config import LOCAL_OUTPUT_DIR
 
 app = Flask(__name__)
@@ -1453,6 +1453,108 @@ _SAVE_LEFTOVER_SUFFIXES = (".tmp_save.mp4", ".prerender.mp4", ".overlay.mp4",
 _FINALIZE_LEFTOVER_SUFFIXES = (".prerender.mp4", ".overlay.mp4", ".music.mp4")
 
 
+# Thumbnails for saved clips (persistent history) live here, served through
+# the same /output/<path> route as the clips themselves.
+THUMB_DIR_REL = "thumbs"
+
+
+def _history_lookup_for(job, draft_abs):
+    """Snapshot the job metadata the history entry needs, taken BEFORE the
+    draft is moved away: score + duration from the matching short entry and
+    the video's title from the job's params."""
+    lookup = {"score": None, "duration_sec": None, "source_title": ""}
+    if not job:
+        return lookup
+    draft_stem = os.path.splitext(os.path.basename(draft_abs))[0]
+    for short in (job.get("result") or {}).get("shorts") or []:
+        clip_url = short.get("clip_url")
+        if not isinstance(clip_url, str):
+            continue
+        if clip_url.startswith("/output/"):
+            short_abs, _ = _resolve_output_safe(clip_url[len("/output/"):])
+        else:
+            short_abs = os.path.realpath(clip_url) if clip_url else None
+        if short_abs == draft_abs or \
+                os.path.splitext(os.path.basename(short_abs or ""))[0] == draft_stem:
+            lookup["score"] = short.get("score")
+            lookup["duration_sec"] = short.get("duration")
+            break
+    p = job.get("_params") or {}
+    lookup["source_title"] = (p.get("source_title") or p.get("video_title")
+                              or "").strip()
+    return lookup
+
+
+def _history_for_saved_clip(lookup, final_path, aspect):
+    """Record a freshly saved clip in the persistent history; never fails.
+
+    ``lookup`` is the pre-removal snapshot from _history_lookup_for (the
+    draft is already moved away by the time we run -- every job-derived
+    value must come from it, not from disk). The thumbnail is generated from
+    the SAVED file into output/thumbs/; any thumbnail/store hiccup is logged
+    and swallowed so a save never turns into an error after the file already
+    landed in saved/. Returns the stored entry (or None on failure).
+    """
+    from shorts_generator.local.thumbgen import make_thumbnail
+
+    output_dir = os.path.realpath(LOCAL_OUTPUT_DIR)
+    rel = os.path.relpath(os.path.realpath(final_path), output_dir).replace("\\", "/")
+    stem = os.path.splitext(os.path.basename(final_path))[0]
+
+    thumb_url = None
+    try:
+        thumb_dir = os.path.join(output_dir, THUMB_DIR_REL)
+        os.makedirs(thumb_dir, exist_ok=True)
+        thumb_abs = make_thumbnail(
+            final_path, out_path=os.path.join(thumb_dir, stem + ".jpg"),
+            title=False)
+        thumb_rel = os.path.relpath(os.path.realpath(thumb_abs), output_dir) \
+            .replace("\\", "/")
+        thumb_url = f"/output/{thumb_rel}"
+    except Exception as e:  # a missing thumb never fails the save
+        print(f"[history] thumbnail failed for {rel}: {e}", flush=True)
+
+    entry = history.add_clip(
+        title=stem,
+        source_title=lookup.get("source_title") or "",
+        saved_url=f"/output/{rel}",
+        thumb_url=thumb_url,
+        score=lookup.get("score"),
+        duration_sec=lookup.get("duration_sec"),
+        aspect_ratio=aspect,
+    )
+    print(f"[history] recorded {entry['id']} -> {rel}", flush=True)
+    return entry
+
+
+def _remove_thumb_file(thumb_url):
+    """Best-effort: delete the history thumbnail behind an /output/ URL."""
+    if not thumb_url or not isinstance(thumb_url, str):
+        return
+    if not thumb_url.startswith("/output/"):
+        return
+    abs_path, _ = _resolve_output_safe(thumb_url[len("/output/"):])
+    if abs_path and os.path.isfile(abs_path):
+        try:
+            os.remove(abs_path)
+        except OSError:
+            pass
+
+
+def _history_remove_by_saved_url(saved_url):
+    """Drop history entries pointing at ``saved_url`` (a saved clip just got
+    deleted on disk) and their thumbnail files. Non-fatal by design."""
+    try:
+        for entry in history.list_history():
+            if entry.get("saved_url") == saved_url:
+                if history.delete_clip(entry.get("id") or ""):
+                    _remove_thumb_file(entry.get("thumb_url"))
+                    print(f"[history] removed {entry.get('id')} (file deleted)",
+                          flush=True)
+    except Exception as e:
+        print(f"[history] cleanup after delete failed: {e}", flush=True)
+
+
 def _do_save(url, title=None, aspect_requested=None):
     """Approve one draft: reframe + effects, then move to output/saved/.
 
@@ -1495,6 +1597,7 @@ def _do_save(url, title=None, aspect_requested=None):
     # and it deletes the source afterwards.
     if job is None:
         return {"error": "clip is not a draft of any known job"}, 404
+    lookup = _history_lookup_for(job, abs_path)
     requested = (aspect_requested or "").strip()
     aspect = requested or ((job or {}).get("aspect_ratio") or "").strip() \
         or draft_target or "9:16"
@@ -1621,9 +1724,18 @@ def _do_save(url, title=None, aspect_requested=None):
             pass
 
     rel = os.path.relpath(os.path.realpath(final_path), output_dir).replace("\\", "/")
-    return {"ok": True, "url": f"/output/{rel}", "saved": True,
+    body = {"ok": True, "url": f"/output/{rel}", "saved": True,
             "aspect_ratio": aspect,
-            "name": os.path.splitext(final_name)[0]}, 200
+            "name": os.path.splitext(final_name)[0]}
+    try:
+        entry = _history_for_saved_clip(lookup, final_path, aspect)
+        if entry:
+            body["history_id"] = entry.get("id")
+    except Exception as e:
+        # The file is already in saved/ and the save contract is fulfilled;
+        # history is best-effort. Never let it break the response.
+        print(f"[history] could not record saved clip {rel}: {e}", flush=True)
+    return body, 200
 
 
 @app.route("/api/shorts/save", methods=["POST"])
@@ -1691,7 +1803,55 @@ def delete_short():
         os.remove(abs_path)
     except OSError as e:
         return jsonify({"error": str(e)}), 500
+    _history_remove_by_saved_url(f"/output/{_safe_rel}")
     return jsonify({"ok": True})
+
+
+@app.route("/api/history")
+def get_history():
+    """Persistent clip history, newest first. Lazily backfills entries for
+    saved clips that predate the history file (no thumbnail regen for those
+    -- thumb_url stays null until the normal save flow creates one)."""
+    history.merge_disk_scan(os.path.realpath(LOCAL_OUTPUT_DIR))
+    return jsonify({"clips": history.list_history()}), 200
+
+
+@app.route("/api/history/favorite", methods=["POST"])
+def favorite_history():
+    """Toggle the favorite flag on one entry. Body: {id} -> entry or 404."""
+    data = request.get_json(silent=True) or request.form.to_dict() or {}
+    entry = history.toggle_favorite((data.get("id") or "").strip())
+    if entry is None:
+        return jsonify({"error": "Clip not found in history"}), 404
+    return jsonify(entry), 200
+
+
+@app.route("/api/history/delete", methods=["POST"])
+def delete_history():
+    """Delete a history entry AND its files (saved clip + thumbnail).
+
+    The video path goes through the same safe output-dir resolution as
+    /api/shorts/delete, so a stored URL can never point outside output/. A
+    missing file just drops the entry (it was probably deleted already).
+    """
+    data = request.get_json(silent=True) or request.form.to_dict() or {}
+    clip_id = (data.get("id") or "").strip()
+    entry = next((c for c in history.list_history() if c.get("id") == clip_id),
+                 None)
+    if entry is None:
+        return jsonify({"error": "Clip not found in history"}), 404
+    saved_url = entry.get("saved_url") or ""
+    if saved_url.startswith("/output/"):
+        abs_path, _ = _resolve_output_safe(saved_url[len("/output/"):])
+        if abs_path and os.path.isfile(abs_path):
+            try:
+                os.remove(abs_path)
+            except OSError as e:
+                return jsonify({"error": str(e)}), 500
+    _remove_thumb_file(entry.get("thumb_url"))
+    history.delete_clip(clip_id)
+    print(f"[history] deleted {clip_id}", flush=True)
+    return jsonify({"ok": True}), 200
 
 
 @app.route("/api/shorts/trim", methods=["POST"])
