@@ -12,6 +12,9 @@ E2E with REAL ffmpeg — the same hermetic pattern as test_title_draw.py:
    "playing" clip would have rolled past it by then).
 4. Edge cases: an `at` past the tail clamps instead of crashing; a missing
    image raises RuntimeError (the caller treats it as "skip the stage").
+5. Video banner: a 1s mp4 with sound replaces the logo — the pause follows
+   the banner's length (not the duration knob), its soundtrack fills the gap,
+   its picture is centered, and the banner animates while the clip is frozen.
 
 Hermetic: settings.local.json is pointed into a temp dir BEFORE any
 shorts_generator import so the persisted file can never leak machine settings
@@ -120,6 +123,38 @@ def _build_fixtures(tmpdir):
     return src, logo
 
 
+def _build_video_banner(tmpdir):
+    """1s 160x90@15 solid-blue testsrc banner with a loud 880Hz tone.
+
+    testsrc is used (not a lavfi color source: ffmpeg rejects
+    color=...:rate= with a generic init error) and negated/darkened so the
+    overlay is trivially distinguishable from the main clip's picture.
+    """
+    banner = os.path.join(tmpdir, "banner.mp4")
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error",
+         "-f", "lavfi", "-i", "testsrc=duration=1:size=160x90:rate=15",
+         "-f", "lavfi", "-i", "sine=frequency=880:duration=1",
+         "-vf", "negate,eq=brightness=-0.3",
+         "-pix_fmt", "yuv420p", "-c:v", "libx264", "-c:a", "aac",
+         "-shortest", banner],
+        check=True, capture_output=True, timeout=60)
+    return banner
+
+
+def audio_mean(path, ss, dur):
+    """Mean absolute PCM level of the audio window [ss, ss+dur)."""
+    import numpy as np
+    proc = subprocess.run(
+        ["ffmpeg", "-v", "error", "-ss", f"{ss:.3f}", "-t", f"{dur:.3f}",
+         "-i", path, "-vn", "-f", "s16le", "-ac", "1", "-ar", "8000", "-"],
+        capture_output=True, timeout=60)
+    if proc.returncode != 0 or not proc.stdout:
+        raise RuntimeError(f"audio decode failed for {os.path.basename(path)}")
+    pcm = np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32)
+    return float(np.abs(pcm).mean())
+
+
 def e2e_checks():
     fails = []
     tmpdir = tempfile.mkdtemp(prefix="watermark_stage_", dir=_TMP)
@@ -204,6 +239,63 @@ def e2e_checks():
         except Exception as e:
             fails += check("missing image raises RuntimeError", False,
                            f"wrong type: {type(e).__name__}: {e}")
+
+        # Video watermark: the banner's own length rules the pause, and its
+        # soundtrack replaces the silence in the gap.
+        banner = _build_video_banner(tmpdir)
+        fails += check("video banner generated (1s, with sound)",
+                       abs(probe_duration(banner) - 1.0) < 0.5
+                       and probe_has_audio(banner))
+
+        vout = os.path.join(tmpdir, "video_watermarked.mp4")
+        os.environ["FORCE_CPU_FFMPEG"] = "1"
+        try:
+            _wm.apply_watermark_pause(src, vout, banner, None, 9.9, 60)
+        finally:
+            os.environ.pop("FORCE_CPU_FFMPEG", None)
+
+        fails += check("video-watermarked clip exists", os.path.isfile(vout))
+        fails += check("pause length = banner length (banner wins over the knob)",
+                       abs(probe_duration(vout) - 4.0) <= 0.6,
+                       f"3.00s + 1s banner -> {probe_duration(vout):.2f}s")
+        fails += check("geometry preserved (video banner)",
+                       probe_dims(vout) == (320, 180))
+        fails += check("audio track survives (video banner)",
+                       probe_has_audio(vout))
+
+        # at=None centers the pause: at = 1.5 - 0.5 = 1.0s, so the banner
+        # covers [1.0, 2.0). Its audio must fill that exact window...
+        mid_gap_audio = audio_mean(vout, 1.2, 0.5)
+        fails += check("banner soundtrack plays during the pause",
+                       mid_gap_audio > 200.0,
+                       f"gap audio mean={mid_gap_audio:.0f}")
+        # ...and the clip's own 440Hz tone resumes afterwards.
+        post_audio = audio_mean(vout, 2.6, 0.5)
+        fails += check("clip audio resumes after the pause",
+                       post_audio > 200.0,
+                       f"post-pause audio mean={post_audio:.0f}")
+
+        # Mid-pause frame carries the banner: compare the center patch
+        # (covered by the 60%-wide overlay) against a corner patch far
+        # outside it — the frozen testsrc survives in the corners, so the
+        # banner's negated/darkened picture must differ from it markedly.
+        vmid = frame_rgb(vout, at=1.5)
+        h, w = vmid.shape[:2]
+        vcenter = vmid[h // 2 - 5:h // 2 + 5,
+                       w // 2 - 5:w // 2 + 5].astype(np.float32)
+        vcorner = vmid[2:12, 2:12].astype(np.float32)
+        vdiff = float(np.abs(vcenter - vcorner).mean())
+        fails += check("video banner visible mid-pause (center != corner)",
+                       vdiff > 25.0, f"center-vs-corner delta={vdiff:.1f}")
+
+        # The banner ANIMATES over the frozen frame: two frames inside the
+        # pause window must differ (the still underneath repeats exactly, so
+        # any movement is the banner — unlike the still-image freeze test).
+        vanim = [frame_rgb(vout, at=t).astype(np.float32) for t in (1.2, 1.6)]
+        vanim_delta = float(np.abs(vanim[1] - vanim[0]).mean())
+        fails += check("video banner animates during the pause",
+                       vanim_delta > 0.5,
+                       f"in-pause frame delta={vanim_delta:.2f}")
     except Exception as e:
         print(f"ERROR  {type(e).__name__}: {e}", flush=True)
         fails.append(f"e2e exception: {e}")

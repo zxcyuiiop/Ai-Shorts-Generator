@@ -687,14 +687,14 @@ def finalize_clip_local(out_path: str, aspect_ratio: str,
     if True:  # match the sibling stages' try/except shape
         try:
             from .watermark import (apply_watermark_pause, watermark_enabled,
-                                    _resolve_image, _probe as _wm_probe)
+                                    _resolve_media, _probe as _wm_probe)
             if watermark_enabled():
                 wm_settings = {
                     "at": env("WATERMARK_AT_SEC", "2.0"),
                     "duration": env("WATERMARK_DURATION_SEC", "1.5"),
                     "scale": env("WATERMARK_SCALE", "35"),
                 }
-                wm_image = _resolve_image(env("WATERMARK_FILE", ""))
+                wm_image = _resolve_media(env("WATERMARK_FILE", ""))
                 has_audio, duration, fps, width, height = _wm_probe(out_path)
                 tmp_wm = out_path + ".watermark.mp4"
                 try:
