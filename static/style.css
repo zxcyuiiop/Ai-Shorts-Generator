@@ -106,7 +106,13 @@
     --shadow-card: 0 1px 2px rgb(16 24 40 / 0.05);
     --shadow-pop: 0 12px 32px -10px rgb(16 24 40 / 0.16);
 }
-/* ---------- Chrome: scrollbar, selection, focus ---------- */
+/* ---------- Reset & chrome: scrollbar, selection, focus ---------- */
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
 html {
     scrollbar-width: thin;
     scrollbar-color: var(--border-strong) transparent;
