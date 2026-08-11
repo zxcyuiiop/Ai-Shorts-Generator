@@ -777,6 +777,8 @@ function renderReview() {
     saveBtn.className = 'btn-primary';
     saveBtn.textContent = 'Сохранить';
     saveBtn.disabled = !!short.saved;
+    // Заголовок хайлайта — сервер назовёт сохранённый файл по нему.
+    if (short.title) saveBtn.dataset.title = short.title;
 
     const trimBtn = document.createElement('button');
     trimBtn.type = 'button';
@@ -853,7 +855,7 @@ function renderReview() {
             const resp = await fetch('/api/shorts/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: short.url }),
+                body: JSON.stringify({ url: short.url, title: saveBtn.dataset.title || '' }),
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || !data.ok) throw new Error(data.error || `HTTP ${resp.status}`);
@@ -865,6 +867,7 @@ function renderReview() {
                 video.src = `${short.url}${sep}t=${Date.now()}`;
                 video.load();
             }
+            if (data.name && short.title) { short.title = data.name; title.textContent = data.name; }
             if (data.aspect_ratio && /^\s*9\s*:\s*16/.test(data.aspect_ratio)) {
                 video.classList.add('review-video-vertical');
             }

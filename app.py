@@ -1284,8 +1284,23 @@ def job_shorts(job_id):
             size = os.path.getsize(abs_path)
         except OSError:
             size = 0
+        # Recover the highlight title for this clip so the review UI can offer
+        # saving under it (same path-matching rules as _job_short_files).
+        title = ""
+        for short in (result.get("shorts") or []) if result else []:
+            clip_url = short.get("clip_url")
+            if not isinstance(clip_url, str):
+                continue
+            if clip_url.startswith("/output/"):
+                short_abs, _ = _resolve_output_safe(clip_url[len("/output/"):])
+            else:
+                short_abs = os.path.realpath(clip_url) if clip_url else None
+            if short_abs == abs_path:
+                title = (short.get("title") or "").strip()
+                break
         shorts.append({
             "name": os.path.basename(abs_path),
+            "title": title,
             "url": f"/output/{rel}",
             "size_bytes": size,
             "duration_sec": _ffprobe_duration(abs_path),
@@ -1315,13 +1330,16 @@ def save_short():
     ``finalize_clip_local`` (blur bars / overlay / music) on it, moves the
     finished clip to ``output/saved/<same subfolder>/``, and deletes the draft.
     Effects run under the producing job's settings snapshot (``_params``), not
-    the current settings file.
+    the current settings file. An optional ``title`` in the payload (the
+    highlight title) renames the saved file to ``<safe-title>.mp4`` with a
+    ``_2``/``_3``/... suffix on collision.
 
     On any failure the draft is left untouched so the user can retry.
     """
     from shorts_generator.config import clear_overrides, set_overrides
     from shorts_generator.local.blurpad import blurpad_enabled_for
     from shorts_generator.local.clipper import _reframe_vertical, finalize_clip_local
+    from shorts_generator.naming import _safe_title_name
 
     data = request.get_json(silent=True) or request.form.to_dict() or {}
     abs_path, safe_rel = _url_to_output_path((data.get("url") or "").strip())
@@ -1419,12 +1437,25 @@ def save_short():
         except OSError:
             pass
         return jsonify({"error": f"could not create saved dir: {e}"}), 500
-    final_path = os.path.join(saved_dir, os.path.basename(abs_path))
+    # Optional highlight title: when it sanitizes to something usable it
+    # replaces the draft basename, and collisions get a _2/_3/... suffix.
+    safe_title = _safe_title_name(data.get("title") or "")
+    ext = os.path.splitext(abs_path)[1] or ".mp4"
+    if safe_title:
+        final_name = safe_title + ext
+        n = 1
+        while os.path.exists(os.path.join(saved_dir, final_name)):
+            n += 1
+            final_name = f"{safe_title}_{n}{ext}"
+    else:
+        final_name = os.path.basename(abs_path)
+    final_path = os.path.join(saved_dir, final_name)
     final_part = final_path + ".part"
 
     # The caption sidecar travels with its clip: delete on burn, move to saved/
     # otherwise (so the review panel still knows captions belong to this clip).
-    final_ass = os.path.join(saved_dir, os.path.basename(captions_ass)) \
+    # Renamed to match the final clip's basename when a title renamed the clip.
+    final_ass = os.path.join(saved_dir, final_name + ".ass") \
         if captions_ass else None
 
     try:
@@ -1456,7 +1487,8 @@ def save_short():
 
     rel = os.path.relpath(os.path.realpath(final_path), output_dir).replace("\\", "/")
     return jsonify({"ok": True, "url": f"/output/{rel}", "saved": True,
-                    "aspect_ratio": aspect})
+                    "aspect_ratio": aspect,
+                    "name": os.path.splitext(final_name)[0]})
 
 
 @app.route("/api/shorts/delete", methods=["POST"])
