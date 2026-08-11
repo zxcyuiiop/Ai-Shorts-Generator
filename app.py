@@ -1353,19 +1353,14 @@ _SAVE_LEFTOVER_SUFFIXES = (".tmp_save.mp4", ".prerender.mp4", ".overlay.mp4",
 _FINALIZE_LEFTOVER_SUFFIXES = (".prerender.mp4", ".overlay.mp4", ".music.mp4")
 
 
-@app.route("/api/shorts/save", methods=["POST"])
-def save_short():
-    """Approve a draft: reframe + effects, then move to output/saved/.
+def _do_save(url, title=None, aspect_requested=None):
+    """Approve one draft: reframe + effects, then move to output/saved/.
 
-    Drafts are rendered horizontally (16:9, no crop) so nothing is lost before
-    review. This reframes the draft to the job's target aspect with face
-    tracking (``_reframe_vertical``) into a temp sibling, runs
-    ``finalize_clip_local`` (blur bars / overlay / music) on it, moves the
-    finished clip to ``output/saved/<same subfolder>/``, and deletes the draft.
-    Effects run under the producing job's settings snapshot (``_params``), not
-    the current settings file. An optional ``title`` in the payload (the
-    highlight title) renames the saved file to ``<safe-title>.mp4`` with a
-    ``_2``/``_3``/... suffix on collision.
+    Returns ``(response_dict, http_status)`` -- the same payload/status
+    ``POST /api/shorts/save`` used to build inline. ``url`` must be an
+    ``/output/...`` path of a draft that belongs to a known job; ``title``
+    (optional highlight title) renames the saved file; ``aspect_requested``
+    overrides the job aspect.
 
     On any failure the draft is left untouched so the user can retry.
     """
@@ -1374,14 +1369,13 @@ def save_short():
     from shorts_generator.local.clipper import _reframe_vertical, finalize_clip_local
     from shorts_generator.naming import _safe_title_name
 
-    data = request.get_json(silent=True) or request.form.to_dict() or {}
-    abs_path, safe_rel = _url_to_output_path((data.get("url") or "").strip())
+    abs_path, safe_rel = _url_to_output_path((url or "").strip())
     if abs_path is None:
-        return jsonify({"error": "url must be an /output/... path"}), 400
+        return {"error": "url must be an /output/... path"}, 400
     if safe_rel == "saved" or safe_rel.startswith("saved/"):
-        return jsonify({"error": "clip is already in saved/"}), 400
+        return {"error": "clip is already in saved/"}, 400
     if not os.path.isfile(abs_path):
-        return jsonify({"error": "File not found"}), 404
+        return {"error": "File not found"}, 404
 
     output_dir = os.path.realpath(LOCAL_OUTPUT_DIR)
     job = None
@@ -1400,8 +1394,8 @@ def save_short():
     # file in output/). Refuse: save applies effects only to known drafts,
     # and it deletes the source afterwards.
     if job is None:
-        return jsonify({"error": "clip is not a draft of any known job"}), 404
-    requested = (data.get("aspect_ratio") or "").strip()
+        return {"error": "clip is not a draft of any known job"}, 404
+    requested = (aspect_requested or "").strip()
     aspect = requested or ((job or {}).get("aspect_ratio") or "").strip() \
         or draft_target or "9:16"
 
@@ -1454,7 +1448,7 @@ def save_short():
         # The optional payload title doubles as (a) the saved filename and
         # (b) the text burned into the video near the bottom.  Forward it here.
         finalize_clip_local(tmp, aspect, captions_ass=captions_ass,
-                            title_text=(data.get("title") or ""))
+                            title_text=(title or ""))
     except Exception as e:
         for path in leftover:
             try:
@@ -1462,7 +1456,7 @@ def save_short():
                     os.remove(path)
             except OSError:
                 pass
-        return jsonify({"error": f"save failed: {e}"}), 500
+        return {"error": f"save failed: {e}"}, 500
     finally:
         clear_overrides()
 
@@ -1474,10 +1468,10 @@ def save_short():
             os.remove(tmp)
         except OSError:
             pass
-        return jsonify({"error": f"could not create saved dir: {e}"}), 500
+        return {"error": f"could not create saved dir: {e}"}, 500
     # Optional highlight title: when it sanitizes to something usable it
     # replaces the draft basename, and collisions get a _2/_3/... suffix.
-    safe_title = _safe_title_name(data.get("title") or "")
+    safe_title = _safe_title_name(title or "")
     ext = os.path.splitext(abs_path)[1] or ".mp4"
     if safe_title:
         final_name = safe_title + ext
@@ -1514,7 +1508,7 @@ def save_short():
                     shutil.move(tmp, abs_path)
         except OSError:
             pass
-        return jsonify({"error": f"could not move into saved/: {e}"}), 500
+        return {"error": f"could not move into saved/: {e}"}, 500
 
     for path in leftover + [draft_backup, final_part]:
         try:
@@ -1524,9 +1518,62 @@ def save_short():
             pass
 
     rel = os.path.relpath(os.path.realpath(final_path), output_dir).replace("\\", "/")
-    return jsonify({"ok": True, "url": f"/output/{rel}", "saved": True,
-                    "aspect_ratio": aspect,
-                    "name": os.path.splitext(final_name)[0]})
+    return {"ok": True, "url": f"/output/{rel}", "saved": True,
+            "aspect_ratio": aspect,
+            "name": os.path.splitext(final_name)[0]}, 200
+
+
+@app.route("/api/shorts/save", methods=["POST"])
+def save_short():
+    """Approve a draft: reframe + effects, then move to output/saved/.
+
+    Thin wrapper around ``_do_save`` -- the payload fields are ``url``,
+    optional ``title`` and optional ``aspect_ratio``.
+    """
+    data = request.get_json(silent=True) or request.form.to_dict() or {}
+    body, status = _do_save(data.get("url"), data.get("title"),
+                            data.get("aspect_ratio"))
+    return jsonify(body), status
+
+
+# Cap for /api/shorts/save_batch -- the queue is a convenience over clicking
+# «Сохранить» per card, not a bulk-export API; 50 is far above any review set.
+_SAVE_BATCH_MAX = 50
+
+
+@app.route("/api/shorts/save_batch", methods=["POST"])
+def save_shorts_batch():
+    """Save several drafts in one request, sequentially.
+
+    Payload: ``{"items": [{"url", "title?", "aspect_ratio?"}, ...]}`` (max
+    ``_SAVE_BATCH_MAX``). Each item goes through ``_do_save`` one at a time --
+    ffmpeg encode is heavy, so never in parallel. A failed item does not abort
+    the rest; the response is always HTTP 200 once the payload parsed, with a
+    per-item ``{url, ok, url?, name?, error?}`` entry.
+    """
+    data = request.get_json(silent=True)
+    if data is None or not isinstance(data, dict) \
+            or not isinstance(data.get("items"), list):
+        return jsonify({"error": "items must be a list of {url, title?, aspect_ratio?}"}), 400
+    items = data["items"]
+    if not items:
+        return jsonify({"error": "items is empty"}), 400
+    if len(items) > _SAVE_BATCH_MAX:
+        return jsonify({"error": f"too many items (max {_SAVE_BATCH_MAX})"}), 400
+
+    results = []
+    for item in items:
+        item = item if isinstance(item, dict) else {}
+        url = item.get("url")
+        body, _status = _do_save(url, item.get("title"), item.get("aspect_ratio"))
+        entry = {"url": (url or ""), "ok": bool(body.get("ok"))}
+        if entry["ok"]:
+            entry["url"] = body.get("url")
+            entry["name"] = body.get("name")
+        else:
+            entry["error"] = body.get("error") or "save failed"
+        results.append(entry)
+    return jsonify({"results": results}), 200
 
 
 @app.route("/api/shorts/delete", methods=["POST"])

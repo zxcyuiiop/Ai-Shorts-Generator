@@ -1112,7 +1112,15 @@ input[type="range"]::-moz-range-thumb {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
+    gap: var(--space-3);
     margin-bottom: var(--space-4);
+    flex-wrap: wrap;
+}
+
+#review-save-selected-btn {
+    width: auto;
+    padding: 8px 16px;
+    font-size: 0.9rem;
 }
 
 .review-header h2 {
@@ -1137,6 +1145,32 @@ input[type="range"]::-moz-range-thumb {
 .review-details {
     color: var(--text-muted);
     font-size: 0.85rem;
+}
+
+/* «В очередь» — компактный переключатель рядом с метаданными карточки. */
+.review-queue-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: 0;
+    font-size: 0.85rem;
+    color: var(--text-body);
+    cursor: pointer;
+}
+
+.review-queue-toggle input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+/* Ошибка пакетного сохранения прямо на карточке. */
+.review-error {
+    color: var(--error);
+    font-size: 0.8rem;
+    flex-basis: 100%;
 }
 
 .review-video {

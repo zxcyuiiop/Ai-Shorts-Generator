@@ -16,6 +16,7 @@ const reviewSection = document.getElementById('review-section');
 const reviewBody = document.getElementById('review-body');
 const reviewDone = document.getElementById('review-done');
 const reviewCounter = document.getElementById('review-counter');
+const reviewSaveSelectedBtn = document.getElementById('review-save-selected-btn');
 
 const stageLabels = {
     starting: 'Запуск…',
@@ -659,6 +660,115 @@ let reviewShorts = [];
 let reviewIndex = 0;
 // Кнопки текущей карточки — нужны шорткатам (S/Del/→), чтобы не искать их по DOM.
 let reviewControls = { save: null, del: null, next: null };
+// Выбранные для пакетного сохранения клипы (url -> true). Обновляется чекбоксами.
+const reviewQueueSelection = new Set();
+let reviewBatchRunning = false;
+
+// Сколько черновиков сейчас отмечено «В очередь» — считаем только несохранённые.
+function queuedUnsavedCount() {
+    return reviewShorts.filter(s => s && !s.saved && reviewQueueSelection.has(s.url)).length;
+}
+
+// Кнопка пакетного сохранения видна, только когда есть хотя бы 1 отмеченный
+// несохранённый клип; N в подписи обновляется вживую.
+function updateSaveSelectedBtn() {
+    if (!reviewSaveSelectedBtn) return;
+    if (reviewBatchRunning) { reviewSaveSelectedBtn.disabled = true; return; }
+    const n = queuedUnsavedCount();
+    reviewSaveSelectedBtn.classList.toggle('hidden', n < 1);
+    reviewSaveSelectedBtn.disabled = false;
+    if (n >= 1) reviewSaveSelectedBtn.textContent = `Сохранить выбранные (${n})`;
+}
+
+// Сброс выделения: сохранённые/удалённые клипы не должны висеть в очереди.
+function pruneQueueSelection() {
+    for (const url of Array.from(reviewQueueSelection)) {
+        const s = reviewShorts.find(x => x.url === url);
+        if (!s || s.saved) reviewQueueSelection.delete(url);
+    }
+}
+
+// Применить результат одного сохранения к карточке (общий путь одиночного и
+// пакетного сохранения — состояние «Сохранено» выглядит одинаково).
+function applySavedState(short, data, { badge, meta, saveBtn, hint, title }) {
+    short.saved = true;
+    short.finalized = true;
+    if (data.url) short.url = data.url;
+    if (data.name && short.title) { short.title = data.name; if (title) title.textContent = data.name; }
+    if (saveBtn) saveBtn.textContent = 'Сохранено';
+    if (hint) {
+        hint.textContent = 'Сохранено в output/saved/ — рефрейм и эффекты применены.';
+        hint.classList.add('review-hint-saved');
+    }
+    if (badge && meta && !badge.isConnected) meta.append(badge);
+    if (short._queueCb) { short._queueCb.checked = false; short._queueCb.disabled = true; }
+    pruneQueueSelection();
+    updateSaveSelectedBtn();
+}
+
+// Пакетное сохранение отмеченных черновиков через /api/shorts/save_batch.
+// Клипы гоняем по одному (сервер тоже обрабатывает их последовательно) —
+// ffmpeg-кодирование тяжёлое, параллелить нельзя.
+async function saveSelectedShorts() {
+    if (reviewBatchRunning) return;
+    const selected = reviewShorts.filter(s => s && !s.saved && reviewQueueSelection.has(s.url));
+    if (!selected.length) return;
+    const items = selected.map(s => ({ url: s.url, title: s.title || '' }));
+    reviewBatchRunning = true;
+    if (reviewSaveSelectedBtn) {
+        reviewSaveSelectedBtn.disabled = true;
+        reviewSaveSelectedBtn.textContent = 'Сохраняю...';
+    }
+    const total = items.length;
+    let done = 0, okCount = 0;
+    showToast(`Сохраняю 0/${total}...`, 'info', total * 3500 + 4000);
+    let results = null;
+    try {
+        const resp = await fetch('/api/shorts/save_batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items }),
+        });
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(body.error || `HTTP ${resp.status}`);
+        results = body.results || [];
+    } catch (e) {
+        reviewBatchRunning = false;
+        updateSaveSelectedBtn();
+        showToast(e.message || 'Не удалось сохранить выбранные клипы', 'error');
+        return;
+    }
+    const byUrl = {};
+    for (const r of results) { if (r && r.url) byUrl[r.url] = r; }
+    for (const s of reviewShorts) {
+        const r = byUrl[s.url];
+        if (!r) continue;
+        if (r.ok) {
+            okCount++;
+            applySavedState(s, { url: r.url, name: r.name },
+                            { badge: s._badge, meta: s._meta, saveBtn: s._saveBtn, hint: s._hint, title: s._title });
+        } else if (s._meta) {
+            let err = s._meta.querySelector('.review-error');
+            if (!err) {
+                err = document.createElement('div');
+                err.className = 'review-error';
+                s._meta.appendChild(err);
+            }
+            err.textContent = r.error || 'Ошибка сохранения';
+        }
+        done++;
+    }
+    reviewBatchRunning = false;
+    updateSaveSelectedBtn();
+    if (done === 0) {
+        showToast('Ничего не сохранено', 'error');
+    } else if (okCount === done) {
+        showToast(`Сохранено ${okCount} из ${done}`, 'success');
+    } else {
+        showToast(`Сохранено ${okCount} из ${done}`, 'error');
+    }
+    if (okCount && reviewIndex >= reviewShorts.length) finishReview();
+}
 
 function formatBytes(n) {
     if (n == null || isNaN(n)) return '';
@@ -721,6 +831,9 @@ function closeReview() {
     reviewShorts = [];
     reviewIndex = 0;
     reviewControls = { save: null, del: null, next: null };
+    reviewQueueSelection.clear();
+    reviewBatchRunning = false;
+    updateSaveSelectedBtn();
 }
 
 function formatDuration(sec) {
@@ -751,6 +864,25 @@ function renderReview() {
     badge.className = 'saved-badge';
     badge.textContent = 'Сохранено';
     if (short.saved) meta.append(title, details, badge); else meta.append(title, details);
+
+    // Чекбокс «В очередь»: отметить этот черновик для пакетного сохранения.
+    // Несохранённые карточки отмечены по умолчанию; сохранённые не участвуют.
+    const queueWrap = document.createElement('label');
+    queueWrap.className = 'review-queue-toggle';
+    const queueCb = document.createElement('input');
+    queueCb.type = 'checkbox';
+    if (!short.saved && !reviewQueueSelection.has(short.url)) reviewQueueSelection.add(short.url);
+    queueCb.checked = !short.saved && reviewQueueSelection.has(short.url);
+    queueCb.disabled = short.saved;
+    queueCb.addEventListener('change', () => {
+        if (queueCb.checked) reviewQueueSelection.add(short.url);
+        else reviewQueueSelection.delete(short.url);
+        updateSaveSelectedBtn();
+    });
+    const queueLbl = document.createElement('span');
+    queueLbl.textContent = 'В очередь';
+    queueWrap.append(queueCb, queueLbl);
+    if (!short.saved) meta.appendChild(queueWrap);
 
     const videoWrap = document.createElement('div');
     videoWrap.className = 'review-videowrap';
@@ -840,6 +972,11 @@ function renderReview() {
 
     actions.append(previewBtn, saveBtn, nextBtn, trimBtn, deleteBtn, thumbBtn, copyBtn, rerunBtn);
     reviewControls = { save: saveBtn, del: deleteBtn, next: nextBtn };
+    // Отложенные ссылки на элементы карточки — пакетное сохранение помечает
+    // карточку «Сохранено» тем же путём, что и одиночное (шевр.-кнопка и т.п.).
+    short._meta = meta; short._badge = badge; short._saveBtn = saveBtn;
+    short._hint = hint; short._title = title; short._queueCb = queueCb;
+    updateSaveSelectedBtn();
 
     // Шорткаты под кнопками — видимая подсказка, что ревью можно вести с клавиатуры.
     const shortcuts = document.createElement('div');
@@ -868,22 +1005,16 @@ function renderReview() {
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || !data.ok) throw new Error(data.error || `HTTP ${resp.status}`);
-            short.saved = true;
-            short.finalized = true;
             if (data.url) {
                 short.url = data.url;
                 const sep = short.url.includes('?') ? '&' : '?';
                 video.src = `${short.url}${sep}t=${Date.now()}`;
                 video.load();
             }
-            if (data.name && short.title) { short.title = data.name; title.textContent = data.name; }
             if (data.aspect_ratio && /^\s*9\s*:\s*16/.test(data.aspect_ratio)) {
                 video.classList.add('review-video-vertical');
             }
-            saveBtn.textContent = 'Сохранено';
-            hint.textContent = 'Сохранено в output/saved/ — рефрейм и эффекты применены.';
-            hint.classList.add('review-hint-saved');
-            if (!badge.isConnected) meta.append(badge);
+            applySavedState(short, data, { badge, meta, saveBtn, hint, title });
             showToast('Клип сохранён в output/saved/', 'success');
             setTimeout(() => advanceReview(), 1100);
         } catch (e) {
@@ -905,6 +1036,10 @@ function renderReview() {
             });
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             showToast('Клип удалён', 'success');
+            // Убрать клип из очереди на пакетное сохранение — его url уже мёртв.
+            reviewQueueSelection.delete(short.url);
+            pruneQueueSelection();
+            updateSaveSelectedBtn();
             advanceReview();
         } catch (e) {
             showToast('Не удалось удалить клип', 'error');
@@ -1131,6 +1266,7 @@ queueUrlInput.addEventListener('keydown', (e) => {
 });
 wireClick('review-close-btn', closeReview);
 wireClick('review-download-all-btn', downloadAllSaved);
+wireClick('review-save-selected-btn', saveSelectedShorts);
 
 // Скачиваем все сохранённые клипы серией скрытых ссылок с download-атрибутом.
 // Без Promise.all по fetch: браузер всё равно режет параллельные скачивания,
