@@ -167,17 +167,24 @@ def main():
         # --- save-button contract: it must collect by id, not FormData ---
         # Баг «nim не сохраняется» жил не на сервере, а в JS: кнопка брала
         # FormData, а у полей провайдеров (id без name) его там не было.
-        check("save button uses collectSettingsPayload()",
-              "window.collectSettingsPayload()" in html)
-        check("collector exists in app.js",
-              "function collectSettingsPayload()" in app_js)
-        check("collector exposed to the inline handler",
-              "window.collectSettingsPayload = collectSettingsPayload" in app_js)
+        # After F4 the settings UI lives on /settings (s2_* ids) and is saved
+        # by static/settings.js, so the contract is checked there.
+        settings_html = (root / "templates" / "settings.html").read_text(encoding="utf-8")
+        settings_js = c.get("/static/settings.js").get_data(as_text=True)
+        check("settings page save button present",
+              'id="s2-save-settings-btn"' in settings_html)
+        check("settings collector exists in settings.js",
+              "function collectSettings()" in settings_js)
+        check("collector wired to the save button",
+              "getElementById('s2-save-settings-btn')" in settings_js
+              and "saveSettings" in settings_js)
         check("collector iterates every persisted field",
-              "for (const field of SETTING_FIELDS)" in app_js)
-        nim_field = re.search(r'id="nim_key"[^>]*>', html)
-        check("nim_key has no name (hence FormData never sent it)",
-              nim_field is not None and "name=" not in nim_field.group(0))
+              "for (const field of SETTING_FIELDS)" in settings_js)
+        check("main page no longer carries a settings form (moved to /settings)",
+              "save-settings-btn" not in html)
+        nim_field = re.search(r'id="s2_nim_key"[^>]*>', settings_html)
+        check("nim_key lives on /settings (not on the main page)",
+              nim_field is not None)
 
         # Full round-trip exactly as the fixed front-end sends it: provider
         # fields present, empty secret absent (collector skips empty secrets so

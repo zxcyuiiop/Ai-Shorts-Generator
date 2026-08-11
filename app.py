@@ -1003,6 +1003,32 @@ def generate():
     api_keys = data.get("api_keys", {})
     if not isinstance(api_keys, dict):
         api_keys = {}
+
+    # Provider keys/models moved off the Generate page to /settings: the form
+    # no longer sends them, so fill in whatever is persisted on disk. An
+    # explicit non-empty form value still wins (direct API use); the settings
+    # form already handles the mask placeholder itself.
+    persisted = settings_store.load()
+    if llm_provider is None and persisted.get("llm_provider"):
+        llm_provider = persisted["llm_provider"]
+    if whisper_device == "auto" and persisted.get("whisper_device"):
+        whisper_device = persisted["whisper_device"]
+    if whisper_model == "base" and persisted.get("whisper_model"):
+        whisper_model = persisted["whisper_model"]
+    if mode == "api":
+        if not api_keys.get("muapi") and persisted.get("muapi_key"):
+            api_keys = {**api_keys, "muapi": persisted["muapi_key"]}
+    else:
+        provider_keys = {
+            "openai": ("openai_key", "openai_model"),
+            "gemini": ("gemini_key", "gemini_model"),
+            "ollama": ("ollama_url", "ollama_model"),
+            "nim": ("nim_key", "nim_url", "nim_model"),
+        }
+        for field in provider_keys.get(llm_provider or "openai", ()):
+            if not api_keys.get(field) and persisted.get(field):
+                api_keys = {**api_keys, field: persisted[field]}
+
     # Overlay settings from GUI (new 9-position grid + margin + scale)
     overlay_position = _get("overlay_position")
     overlay_margin = _get("overlay_margin")

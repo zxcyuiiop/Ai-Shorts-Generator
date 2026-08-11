@@ -70,13 +70,14 @@ function updateStageTracker(stageKey) {
     });
 }
 
-// Every field the server persists. Same names on both sides so save/restore
-// stays a straight loop rather than a hand-maintained mapping.
+// Every field the server persists. Same names on both sides so restore stays
+// a straight loop rather than a hand-maintained mapping. Provider keys,
+// llm_provider and whisper options are NOT here: they live exclusively on the
+// /settings page -- the server merges them from settings.local.json at
+// generate time (see /api/generate), which is also what keeps direct API
+// callers and the settings page working as the single source of truth.
 const SETTING_FIELDS = [
-    'mode', 'llm_provider', 'num_clips', 'aspect_ratio', 'format', 'language',
-    'muapi_key', 'openai_key', 'openai_model', 'gemini_key', 'gemini_model',
-    'ollama_url', 'ollama_model', 'nim_key', 'nim_url', 'nim_model',
-    'whisper_device', 'whisper_model', 'clip_length',
+    'mode', 'num_clips', 'aspect_ratio', 'format', 'language', 'clip_length',
     'overlay_position', 'overlay_margin', 'overlay_scale', 'use_overlay_opencv',
     'overlay_enabled', 'overlay_x', 'overlay_y',
     'silence_cut', 'blur_bars', 'music_enabled', 'music_file', 'music_volume',
@@ -88,63 +89,6 @@ const SETTING_FIELDS = [
 ];
 
 const SECRET_MASK = '••••••••';
-
-// Secret fields whose placeholder turns into a mask hint once a key is stored
-// server-side (value stays empty so nothing readable reaches the DOM).
-const SECRET_FIELDS = new Set(['muapi_key', 'openai_key', 'gemini_key', 'nim_key']);
-
-// Снимок последних сохранённых настроек: если текущие значения отличаются,
-// на кнопке «Сохранить настройки» горит точка — напоминание, что правки уйдут,
-// если закрыть страницу, не сохранив.
-let savedSnapshot = null;
-
-function snapshotSettings() {
-    const snap = {};
-    for (const field of SETTING_FIELDS) {
-        const el = document.getElementById(field);
-        if (!el) continue;
-        snap[field] = el.type === 'checkbox' ? (el.checked ? '1' : '0') : String(el.value);
-    }
-    return snap;
-}
-
-function refreshDirty() {
-    if (!savedSnapshot) return;
-    const cur = snapshotSettings();
-    const dirty = Object.keys(cur).some(k => cur[k] !== savedSnapshot[k]);
-    const btn = document.getElementById('save-settings-btn');
-    if (btn) btn.classList.toggle('is-dirty', dirty);
-}
-
-// Вызывается inline-скриптом сохранения настроек в index.html после успеха.
-window.markSettingsSaved = () => {
-    savedSnapshot = snapshotSettings();
-    refreshDirty();
-};
-
-// Собирает полный payload для POST /api/settings по id элементов.
-// FormData тут не подходит: у полей провайдеров (nim_key, openai_key, ...)
-// нет атрибута name, поэтому FormData их молча пропускала — отсюда баг
-// «NIM ключ не сохраняется». Checkbox-поля шлём всегда как '1'/'0', чтобы
-// явное «выкл» тоже переживало перезапуск. Пустой секрет не шлём вовсе:
-// иначе он затирал бы сохранённый ключ (пустое поле = «не менять»,
-// сохранённый ключ в DOM не попадает — только placeholder-маска).
-function collectSettingsPayload() {
-    const payload = {};
-    for (const field of SETTING_FIELDS) {
-        const el = document.getElementById(field);
-        if (!el) continue;
-        if (el.type === 'checkbox') {
-            payload[field] = el.checked ? '1' : '0';
-            continue;
-        }
-        const value = String(el.value);
-        if (value === '' && SECRET_FIELDS.has(field)) continue;
-        payload[field] = value;
-    }
-    return payload;
-}
-window.collectSettingsPayload = collectSettingsPayload;
 
 let timerHandle = null;
 let activeJobId = null;          // job whose SSE stream is being followed
@@ -271,38 +215,6 @@ function updateLocalFileVisibility() {
     if (sec) sec.classList.toggle('inactive', !active);
 }
 
-function updateVisibleApiGroups() {
-    const mode = document.getElementById('mode').value;
-    const llmSelect = document.getElementById('llm_provider');
-    const llmHint = document.getElementById('llm-hint');
-    const whisperDevice = document.getElementById('whisper_device');
-    const whisperModel = document.getElementById('whisper_model');
-    const provider = llmSelect.value;
-
-    const apiMode = mode === 'api';
-    llmSelect.disabled = apiMode;
-    llmHint.style.display = apiMode ? 'inline' : 'none';
-    if (apiMode) llmSelect.value = '';
-
-    const localMode = mode === 'local';
-    whisperDevice.disabled = !localMode;
-    whisperModel.disabled = !localMode;
-    const localHints = document.querySelectorAll('#local-options-row .label-hint');
-    localHints.forEach(h => h.style.display = localMode ? 'none' : 'inline');
-
-    // Dim the provider blocks that don't apply, rather than hiding them --
-    // an empty-looking panel reads as a broken one.
-    const activeGroups = apiMode
-        ? ['muapi-group']
-        : (provider ? [`${provider}-group`]
-                    : ['openai-group', 'gemini-group', 'ollama-group', 'nim-group']);
-
-    document.querySelectorAll('.api-group').forEach(group => {
-        group.classList.toggle('inactive', !activeGroups.includes(group.id));
-    });
-    updateLocalFileVisibility();
-}
-
 function applyOverlaySettings(saved) {
     const enabled = document.getElementById('overlay_enabled');
     if (saved.overlay_enabled !== undefined) {
@@ -339,12 +251,6 @@ async function restoreSettings() {
     for (const field of SETTING_FIELDS) {
         const el = document.getElementById(field);
         if (!el || saved[field] === undefined || saved[field] === '') continue;
-        if (SECRET_FIELDS.has(field) && saved[field] === SECRET_MASK) {
-            // Настоящий ключ живёт только на сервере: в DOM кладём пустое
-            // значение, а о сохранённости сигнализируем masked-плейсхолдером.
-            el.placeholder = `${SECRET_MASK} (сохранено)`;
-            continue;
-        }
         applyFieldValue(el, saved[field]);
     }
     applyOverlaySettings(saved);
@@ -352,10 +258,7 @@ async function restoreSettings() {
     updateMusicFileLabel();
     updateWatermarkFileLabel();
     if (saved.url && !queueUrlInput.value) queueUrlInput.value = saved.url;
-    updateVisibleApiGroups();
     updateLocalFileVisibility();
-    savedSnapshot = snapshotSettings();
-    refreshDirty();
 }
 
 function applyFieldValue(el, value) {
@@ -458,26 +361,9 @@ function clampNumberInput(id, min, max) {
     return clamped;
 }
 
-function collectApiKeys(mode, provider) {
-    const read = id => document.getElementById(id).value;
-    if (mode === 'api') {
-        return read('muapi_key') ? { muapi: read('muapi_key') } : {};
-    }
-
-    const byProvider = {
-        openai: ['openai_key', 'openai_model'],
-        gemini: ['gemini_key', 'gemini_model'],
-        ollama: ['ollama_url', 'ollama_model'],
-        nim: ['nim_key', 'nim_url', 'nim_model'],
-    };
-    const keys = {};
-    for (const field of byProvider[provider || 'openai'] || []) {
-        const value = read(field);
-        if (value) keys[field] = value;
-    }
-    return keys;
-}
-
+// API keys and LLM provider settings live exclusively on the Settings page
+// and are persisted server-side (settings.local.json). /api/generate merges
+// them in itself, so the client no longer sends them.
 function collectOverlaySettings() {
     const xRaw = document.getElementById('overlay_x').value;
     const yRaw = document.getElementById('overlay_y').value;
@@ -632,20 +518,15 @@ function renderQueue(jobs) {
 
 async function addToQueue(url) {
     const mode = document.getElementById('mode').value;
-    const provider = document.getElementById('llm_provider').value || null;
     const payload = {
         url,
         source_type: 'url',
         mode,
-        llm_provider: provider,
         num_clips: clampNumberInput('num_clips', 1, 20) ?? 3,
         clip_length: document.getElementById('clip_length').value,
         aspect_ratio: document.getElementById('aspect_ratio').value,
         format: document.getElementById('format').value,
         language: document.getElementById('language').value || null,
-        whisper_device: document.getElementById('whisper_device').value,
-        whisper_model: document.getElementById('whisper_model').value,
-        api_keys: collectApiKeys(mode, provider),
         ...collectOverlaySettings(),
         ...collectProcessingSettings(),
     };
@@ -1262,8 +1143,7 @@ function wireChange(id, handler) {
     el.addEventListener('change', handler);
 }
 
-wireChange('mode', updateVisibleApiGroups);
-wireChange('llm_provider', updateVisibleApiGroups);
+wireChange('mode', updateLocalFileVisibility);
 
 wireClick('add-to-queue-btn', () => {
     if (processingInFlight) { showToast('Дождитесь завершения текущей задачи', 'info'); return; }
@@ -1571,7 +1451,6 @@ function followJobProgress(jobId) {
     };
 }
 
-updateVisibleApiGroups();
 updateLocalFileVisibility();
 updateMusicVolumeLabel();
 updateMusicFileLabel();
@@ -1664,22 +1543,16 @@ form.addEventListener('submit', async (e) => {
     pipelineLog.textContent = '';
     startTimer(Date.now());
 
-    const provider = document.getElementById('llm_provider').value || null;
-
     try {
         const payload = {
             url,
             source_type,
             mode,
-            llm_provider: provider,
             num_clips: clampNumberInput('num_clips', 1, 20) ?? 3,
             clip_length: document.getElementById('clip_length').value,
             aspect_ratio: document.getElementById('aspect_ratio').value,
             format: document.getElementById('format').value,
             language: document.getElementById('language').value || null,
-            whisper_device: document.getElementById('whisper_device').value,
-            whisper_model: document.getElementById('whisper_model').value,
-            api_keys: collectApiKeys(mode, provider),
             ...collectOverlaySettings(),
             ...collectProcessingSettings(),
         };
