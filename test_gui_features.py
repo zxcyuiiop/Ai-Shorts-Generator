@@ -180,8 +180,8 @@ def main():
               and "saveSettings" in settings_js)
         check("collector iterates every persisted field",
               "for (const field of SETTING_FIELDS)" in settings_js)
-        check("main page no longer carries a settings form (moved to /settings)",
-              "save-settings-btn" not in html)
+        check("main page save button persists only the generation config (not a provider form)",
+              "save-settings-btn" in html and 'id="generate-form"' in html)
         nim_field = re.search(r'id="s2_nim_key"[^>]*>', settings_html)
         check("nim_key lives on /settings (not on the main page)",
               nim_field is not None)

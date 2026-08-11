@@ -84,8 +84,7 @@ const SETTING_FIELDS = [
     'captions_enabled', 'caption_style', 'face_track',
     'caption_position', 'caption_margin_v',
     'title_enabled', 'title_y_from_bottom', 'title_font_size',
-    'watermark_enabled', 'watermark_at_sec', 'watermark_duration_sec',
-    'watermark_scale', 'watermark_file',
+    'watermark_enabled', 'watermark_at_sec', 'watermark_file',
 ];
 
 const SECRET_MASK = '••••••••';
@@ -1447,7 +1446,11 @@ updateLocalFileVisibility();
 updateMusicVolumeLabel();
 updateMusicFileLabel();
 updateWatermarkFileLabel();
-restoreSettings();
+restoreSettings().then(() => {
+    // База для dirty-точки берётся только после применения сохранённых
+    // настроек -- иначе пустые поля ложно подсвечивали бы кнопку.
+    savedSettingsSnapshot = JSON.stringify(collectSettingsPayload());
+});
 ensureResultsEmptyState();
 
 // Переключатель темы: инвертирует то, что выставил anti-FOUC скрипт в <head>.
@@ -1456,6 +1459,68 @@ wireClick('theme-toggle', () => {
     document.documentElement.dataset.theme = next;
     try { localStorage.setItem('theme', next); } catch { /* приватный режим */ }
 });
+
+wireClick('save-settings-btn', saveSettingsFromIndex);
+
+// Кнопка «Сохранить настройки» на странице генерации: персистит текущий
+// конфиг (mode/clip_length/… + оверлей + постобработка) через тот же
+// /api/settings, что и страница настроек -- ключи здесь и там разные.
+function collectSettingsPayload() {
+    const payload = {
+        mode: document.getElementById('mode').value,
+        num_clips: String(clampNumberInput('num_clips', 1, 20) ?? 3),
+        clip_length: document.getElementById('clip_length').value,
+        aspect_ratio: document.getElementById('aspect_ratio').value,
+        format: document.getElementById('format').value,
+        language: document.getElementById('language').value || '',
+        ...collectOverlaySettings(),
+        ...collectProcessingSettings(),
+    };
+    // Чекбоксы всегда едут как '1'/'0', чтобы явный "off" переживал рестарт
+    // (см. settings_store: alias-читатели считают только "1"/"0" однозначными).
+    for (const [k, v] of Object.entries(payload)) {
+        if (typeof v === 'boolean') payload[k] = v ? '1' : '0';
+        else if (v === null || v === undefined) payload[k] = '';
+    }
+    return payload;
+}
+
+// Dirty-состояние: есть ли несохранённые правки относительно последнего
+// сохранённого снапшота. Точка на кнопке «Сохранить настройки».
+let savedSettingsSnapshot = '';
+
+function computeDirty() {
+    return savedSettingsSnapshot !== '' &&
+           savedSettingsSnapshot !== JSON.stringify(collectSettingsPayload());
+}
+
+function refreshDirty() {
+    const btn = document.getElementById('save-settings-btn');
+    if (btn) btn.classList.toggle('is-dirty', computeDirty());
+}
+
+async function saveSettingsFromIndex() {
+    const btn = document.getElementById('save-settings-btn');
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Сохранение…';
+    try {
+        const resp = await fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(collectSettingsPayload()),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        savedSettingsSnapshot = JSON.stringify(collectSettingsPayload());
+        refreshDirty();
+        showToast('Настройки сохранены', 'success');
+        btn.textContent = 'Сохранено';
+    } catch (e) {
+        showToast('Не удалось сохранить настройки', 'error');
+        btn.textContent = 'Ошибка';
+    }
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1500);
+}
 
 // Dirty-точка: следим за любыми правками полей, не привязываясь к форме —
 // часть контролов живёт вне #generate-form.
