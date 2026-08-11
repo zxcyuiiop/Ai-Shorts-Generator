@@ -174,6 +174,53 @@ def unit_checks():
     fails += check("truncated title never exceeds the ~80 char budget",
                    len(glued) <= _tbl._MAX_TOTAL_CHARS,
                    f"{len(glued)} chars")
+
+    # Pixel budget: lines are measured against the frame width — a wide title
+    # on a narrow canvas triggers a pixel-budgeted rewrap, and if even that
+    # cannot fit, the font is shrunk until every line (box padding included)
+    # is inside the _WIDTH_BUDGET_PCT share of the frame. THIS, not char
+    # counts, is what keeps the renderer from clipping text off-canvas.
+    budget_1080 = int(1080 * _tbl._WIDTH_BUDGET_PCT)
+    fits_1080 = _tbl.build_title_drawtext_filter("Quick hello", 750, 64,
+                                                 frame_width=1080)
+    fails += check("comfortable title keeps the requested fontsize",
+                   ":fontsize=64" in fits_1080, fits_1080[:110])
+    fails += check("64px Arial Bold 'Quick hello' fits the 1080 budget",
+                   _tbl._measure_line_px("Quick hello", 64) + 36 <= budget_1080)
+
+    narrow = _tbl.build_title_drawtext_filter(long, 750, 200, frame_width=606)
+    nbudget = int(606 * _tbl._WIDTH_BUDGET_PCT)
+    import re as _re
+    sizes = [int(s) for s in _re.findall(r":fontsize=(\d+)", narrow)]
+    fails += check("narrow canvas squeezes the font to a shared smaller size",
+                   len(sizes) >= 1 and 0 < max(sizes) < 200
+                   and len(set(sizes)) == 1,
+                   f"fontsizes={sizes}")
+    texts = _re.findall(r"text='((?:[^'\\]|\\.)*)'", narrow)
+    fails += check("every narrow line lands inside the pixel budget",
+                   all(_tbl._measure_line_px(t.replace("\\", ""), sizes[0]) + 36
+                       <= nbudget for t in texts),
+                   f"lines={texts} at {sizes[0]}px vs {nbudget}")
+
+    huge_narrow = _tbl.build_title_drawtext_filter(huge, 750, 64,
+                                                   frame_width=200)
+    f2 = [int(s) for s in _re.findall(r":fontsize=(\d+)", huge_narrow)]
+    fails += check("the squeeze never goes below the readable floor",
+                   f2 and min(f2) >= _tbl._FONT_FLOOR, f"fontsizes={f2}")
+
+    # Direct helpers: char-wrap stays the calibration default; pixel rewrap
+    # rebalances; the fitter leaves fitting fonts alone.
+    fails += check("pixel-aware helpers exposed and sane",
+                   _tbl._measure_line_px("x", 64) > 0
+                   and _tbl._fit_fontsize_px(["Quick hello"], 64,
+                                             budget_1080) == 64
+                   and _tbl._fit_fontsize_px([long], 64, 100)
+                   == max(_tbl._FONT_FLOOR, int(64 * 100
+                                                / (_tbl._measure_line_px(long, 64)
+                                                   + 36))))
+    # Pathological lone word wider than any window: one line, never dropped.
+    fails += check("a lone over-wide word still survives as one line",
+                   len(_tbl._wrap_lines_px("x" * 100, 64, 10)) == 1)
     return fails
 
 
@@ -222,6 +269,50 @@ def e2e_checks():
         _tbl.apply_title_drawtext(no_op, "")
         fails += check("empty title is a no-op",
                        probe_duration(no_op) == before_duration)
+
+        # Narrow-canvas overflow guard: the same long TITLE at max font on a
+        # 606px-wide clip must paint fully INSIDE the frame — the budgeted
+        # rewrap + font squeeze replaces the old off-canvas clipping. Proof by
+        # picture: pre-fix the title's black box touches the frame borders;
+        # post-fix a clean video-colored margin survives on both.
+        long = ("Это довольно длинный заголовок яркого момента, который точно "
+                "превышает тридцать восемь символов и требует второй строки")
+        narrow_src = os.path.join(tmpdir, "narrow_src.mp4")
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error",
+             "-f", "lavfi", "-i", "color=c=red:duration=2:size=606x1080:rate=20",
+             "-pix_fmt", "yuv420p", "-c:v", "libx264", narrow_src],
+            check=True, capture_output=True, timeout=60)
+        narrow = os.path.join(tmpdir, "narrow.mp4")
+        shutil.copyfile(narrow_src, narrow)
+        os.environ["FORCE_CPU_FFMPEG"] = "1"
+        os.environ["TITLE_FONT_SIZE"] = "200"
+        try:
+            _tbl.apply_title_drawtext(narrow, long)
+        finally:
+            os.environ.pop("FORCE_CPU_FFMPEG", None)
+            os.environ.pop("TITLE_FONT_SIZE", None)
+        narrow_frame = frame_gray_f32(narrow, at=1.0)
+        # Two stacked title lines span a tall band near the upper-middle. The
+        # whole band must keep a clean margin on BOTH frame edges: a title
+        # touching the border paints gray box pixels there while untouched
+        # columns keep the source video color. Thresholds are calibrated from
+        # the SOURCE frame itself (near-lossless x264 keeps flat color=c=red
+        # uniform), so no magic luminance constants are needed.
+        import numpy as _np
+        src_n = frame_gray_f32(narrow_src, at=1.0)
+        ref = float(min(src_n[200:620, :3].min(), src_n[200:620, -3:].min()))
+        band = narrow_frame[200:620, :]
+        left_margin = float(band[:, :3].min())
+        right_margin = float(band[:, -3:].min())
+        fails += check("title stays inside a narrow canvas (margins survive)",
+                       left_margin > ref - 10.0 and right_margin > ref - 10.0,
+                       f"edge min L={left_margin:.0f} R={right_margin:.0f} ref={ref:.0f}")
+        # ...and the title really did render (center of the band differs from
+        # the untouched source, where the title's dark box painted over red).
+        center = float(_np.abs(band[:, 300:306] - src_n[200:620, 300:306]).mean())
+        fails += check("narrow title still rendered in the band",
+                       center > 1.0, f"center vs source delta={center:.2f}")
 
         # TITLE_ENABLED=0 must skip the burn even with a real title.
         disabled = os.path.join(tmpdir, "disabled.mp4")
