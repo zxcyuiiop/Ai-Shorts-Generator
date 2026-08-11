@@ -112,3 +112,85 @@ Design tokens and theme values live at the top of `static/style.css`
 - **Why:** triage by color is instant; raw numbers forced reading every card.
   Uses data the backend already returns — no invented metrics.
 - **How to verify:** results screen → cards show green/amber/red chips by score.
+
+---
+
+# Night update — 2026-08-11
+
+Second over-night pass on top of the GUI redesign: page split, persistent history,
+save-time highlights, a real PNG watermark with freeze-frame, and a cohesive
+cobalt visual theme. All tests green (23/23 via `run_all_tests.py --short`).
+
+## N1 — Clips saved under their highlight title
+
+- **Idea:** when a draft is approved it can carry the LLM highlight title; the
+  saved file in `output/saved/` is named by that title (sanitized via
+  `_safe_title_name`), and `GET /api/jobs/<id>/shorts` surfaces `title` per clip.
+- **Why:** «clip_07.mp4» was useless for later triage; a human-readable title
+  makes the saved folder self-describing.
+- **How to verify:** in review, press «Сохранить» on a card — the file lands in
+  `output/saved/` as `<title>.mp4` (a repeat title gets `_2`, `_3`, …).
+
+## N2 — Highlight title burned into the video
+
+- **Idea:** the same title is drawn with a `drawtext` pass ~750 px above the
+  bottom of the final 1080×1920 frame, after captions and before the overlay.
+  Tunable: `TITLE_ENABLED`, `TITLE_Y_FROM_BOTTOM`, `TITLE_FONT_SIZE`.
+- **Why:** the first seconds of a Short need a hook; the title is the hook
+  the model already picked.
+- **How to verify:** save any titled clip → the title text is visible near the
+  bottom; «Settings» / `settings.local.json` can move it up/down or disable it.
+
+## N3 — Batch save queue in the review panel
+
+- **Idea:** a «Сохранить всё оставшееся» button in the review header queues all
+  remaining cards through the new `POST /api/shorts/save_batch` endpoint — one
+  request, sequential saves, per-item `{ok, error?}` results.
+- **Why:** saving 10+ drafts one click at a time was the last mouse-heavy step
+  in the whole flow.
+- **How to verify:** generate ≥2 clips → in review press the batch button →
+  cards mark themselves «Сохранено» without per-card clicks.
+
+## N4 — Custom watermark with a freeze-frame pause
+
+- **Idea:** any PNG/JPEG logo can be burned in via `POST /api/upload/watermark`
+  (persisted as `WATERMARK_FILE`). During finalize the clip freezes for
+  `WATERMARK_DURATION_SEC` at `WATERMARK_AT_SEC`, showing the logo at
+  `WATERMARK_SCALE`% of frame width — the classic TikTok outro beat.
+- **Why:** first-class branding without editing the video afterwards; the
+  freeze makes even a tiny logo readable.
+- **How to verify:** upload a logo on the Settings page → save a clip → at
+  the configured second the picture holds and the logo overlays it; duration
+  grows by the pause.
+
+## N5 — Persistent clip history
+
+- **Idea:** every approved clip is recorded in `output/history.json`
+  (`shorts_generator/history.py`) with title, source title, score, duration,
+  aspect and a JPEG thumbnail in `output/thumbs/`; endpoints: `GET /api/history`,
+  favorite + delete. Survives server restarts and re-scans `output/saved/` for
+  untracked files.
+- **Why:** «what did I already keep?» had no answer across sessions.
+- **How to verify:** save a clip → open `/history` → the clip appears with a
+  thumbnail; star toggles, delete removes the entry and the file.
+
+## N6 — Generate / History / Settings pages
+
+- **Idea:** the single page split into three routes — `/` (generate + review),
+  `/history` (searchable gallery with favorites), `/settings` (API keys and
+  effect knobs). Shared chrome (theme toggle, toasts) lives in `common.js`.
+- **Why:** the monolith page had outgrown one screen; settings and history
+  were buried layers deep.
+- **How to verify:** the header nav shows three tabs; each route loads
+  standalone with working theme/toasts.
+
+## N7 — Cohesive visual redesign (cobalt-signal)
+
+- **Idea:** all three pages share one token set (deep cobalt accent, wide
+  layout, calmer card surfaces); review cards, history grid and settings form
+  were rebuilt on it. Russian microcopy unchanged.
+- **Why:** the F1–F10 polish layered on the old base had started to drift;
+  a single systemic pass makes the app look like one product.
+- **How to verify:** open any page — consistent accent/typography; dark/light
+  toggle works everywhere.
+

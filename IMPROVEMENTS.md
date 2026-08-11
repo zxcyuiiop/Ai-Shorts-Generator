@@ -85,3 +85,30 @@ review/advance flow, GUI feature contracts, session restore.
 - «Умный» рекроп по субтитрам: держать говорящего в кадре, а не центр.
 - Очередь → история: позволить скачать логи job'а из GUI.
 - Docker / start-скрипт для полностью автономного подъёма.
+
+---
+
+## Night update — 2026-08-11
+
+Second over-night pass on top of the GUI redesign. 7 new features,
+`run_all_tests.py --short` is green (23/23), all commits on `main`:
+
+- **Clips saved under their highlight title** — `POST /api/shorts/save` now
+  accepts `title`; the file lands in `output/saved/` as `<title>.mp4`
+  (`7175657`).
+- **Title burned into the video** at ~750px from the bottom, tunable via
+  `TITLE_ENABLED` / `TITLE_Y_FROM_BOTTOM` / `TITLE_FONT_SIZE` (`19e79aa`).
+- **Batch save queue** in the review header → `POST /api/shorts/save_batch`
+  walks all remaining cards sequentially (`eed6acf`).
+- **Custom PNG watermark with a freeze-frame pause** —
+  `POST /api/upload/watermark` + `WATERMARK_*` settings; the clip holds still
+  for `WATERMARK_DURATION_SEC` at `WATERMARK_AT_SEC` with the logo overlaid
+  (`f10e9e4`).
+- **Persistent clip history** — `shorts_generator/history.py` writes
+  `output/history.json`; thumbnails in `output/thumbs/`; favorite/delete via
+  `/api/history/*`; backfills old saved clips on first read (`2177adf`).
+- **Page split** — `/` Generate, `/history` gallery, `/settings` API keys;
+  shared chrome in `static/common.js` (`81c1fc7`).
+- **Visual redesign** — cobalt-signal theme over all three pages, one token
+  set in `static/style.css` (`b7aa452`).
+

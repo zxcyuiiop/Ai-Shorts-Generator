@@ -6,12 +6,16 @@ Turn any long YouTube video or local file into ready-to-publish short clips. The
 
 - **Two pipelines** — fully remote via [MuAPI](https://muapi.ai) (hosted, nothing to install) or fully local: yt-dlp download → faster-whisper transcription → LLM highlight picking (OpenAI / Gemini / Ollama / NVIDIA NIM) → ffmpeg/OpenCV cutting
 - **Review-first workflow** — generation produces 16:9 drafts; the GPU-heavy vertical crop, effects and captions run only on clips you actually save
+- **Saved under the highlight title** — approving a draft can carry the LLM title; the file lands in `output/saved/` as `<title>.mp4` and the same text is burned ~750px above the bottom of the frame (`TITLE_*` env)
+- **Batch save** — «Сохранить всё» in the review header queues every remaining clip through `POST /api/shorts/save_batch`
+- **Persistent history** — saved clips are recorded in `output/history.json` with a JPEG thumbnail; browse/star/delete them on the `/history` page (survives restarts)
 - **Effects** — blurred-background fit, TikTok-style watermark (position/scale grid), background music with volume control, silence jump-cuts
+- **Custom watermark pause** — upload any PNG/JPEG (`WATERMARK_FILE`) and the clip freeze-frames on it for `WATERMARK_DURATION_SEC` at `WATERMARK_AT_SEC` during save
 - **Karaoke captions** — word-level burned-in subtitles with a highlight on the current word (opt-in; classic style available)
 - **Face tracking** — OpenCV-based reframe keeps the speaker in frame during the vertical crop (env switchable)
 - **Cover thumbnails** — one click grabs a representative frame and overlays the title as a JPEG
 - **Saved / discard flow** — «Сохранить» applies everything and moves the clip to `output/saved/`; «Удалить» removes it
-- **Web GUI** (Flask, port 5000) with live progress, settings persistence, and per-clip review cards
+- **Web GUI** (Flask, port 5000) split into three pages: `/` Generate, `/history`, `/settings` (API keys + effect knobs)
 - **CLI** — same pipeline from the command line for scripting
 
 ## Quick start
