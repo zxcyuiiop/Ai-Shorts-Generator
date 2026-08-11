@@ -58,6 +58,7 @@ Rules:
 - {num_clips_instruction}
 - For each highlight, identify the single best "hook_sentence" — the opening line that would make someone stop scrolling
 - Explain in one sentence why this clip is viral ("virality_reason")
+- LANGUAGE: write "title", "hook_sentence" and "virality_reason" strictly in the language the transcript is spoken in (Russian speech → Russian text, English speech → English text). Never translate into another language.
 
 Respond ONLY with valid JSON (no markdown, no explanation):
 {{"highlights":[{{"title":"string","start_time":float,"end_time":float,"score":int,"hook_sentence":"string","virality_reason":"string"}}]}}"""
