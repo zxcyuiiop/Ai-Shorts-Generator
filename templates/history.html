@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>История — AI YouTube Shorts Generator</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+    <script>
+        // Anti-FOUC: resolve the theme before first paint.
+        (function () {
+            try {
+                var t = localStorage.getItem('theme');
+                if (!t) t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+                document.documentElement.dataset.theme = t;
+            } catch (e) {
+                document.documentElement.dataset.theme = 'dark';
+            }
+        })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container container-wide">
+        <header>
+            <div class="header-text">
+                <h1>История</h1>
+                <p>Все сохранённые шорты</p>
+            </div>
+            <div class="header-actions">
+                <button id="theme-toggle" class="btn-secondary theme-toggle" type="button"
+                        aria-label="Переключить тему" title="Переключить тему">
+                    <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle cx="12" cy="12" r="4.2"></circle>
+                        <path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M19.1 4.9l-1.6 1.6M6.5 17.5l-1.6 1.6"></path>
+                    </svg>
+                    <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M20.2 14.2A8.2 8.2 0 0 1 9.8 3.8a8.2 8.2 0 1 0 10.4 10.4Z"></path>
+                    </svg>
+                </button>
+            </div>
+        </header>
+        <nav class="page-nav" aria-label="Разделы">
+            <a href="/">Генерация</a>
+            <a href="/history" class="active" aria-current="page">История</a>
+            <a href="/settings">Настройки</a>
+        </nav>
+
+        <main>
+            <div class="history-toolbar">
+                <input type="search" id="gallery-search" placeholder="Поиск по названию…"
+                       aria-label="Поиск по названию">
+                <div class="chip-group" role="group" aria-label="Фильтр">
+                    <button type="button" class="chip chip-active" id="filter-all">Все</button>
+                    <button type="button" class="chip" id="filter-fav">Избранное</button>
+                </div>
+            </div>
+
+            <div id="history-gallery" class="gallery">
+                <div id="gallery-empty" class="gallery-empty" hidden>
+                    <p>История пуста — сгенерируйте первый шортс</p>
+                    <a class="btn-primary" href="/">К генерации</a>
+                </div>
+                <div id="gallery-error" class="gallery-error" hidden>
+                    <p>Не удалось загрузить историю</p>
+                    <button type="button" class="btn-secondary" id="gallery-retry">Повторить</button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div id="video-modal" class="video-modal" hidden>
+        <div class="video-modal-backdrop" data-close></div>
+        <div class="video-modal-box" role="dialog" aria-modal="true" aria-label="Просмотр клипа">
+            <button type="button" class="video-modal-close" data-close aria-label="Закрыть">&times;</button>
+            <video id="video-modal-player" controls playsinline></video>
+        </div>
+    </div>
+
+    <div id="toast-root" aria-live="polite"></div>
+
+    <script src="{{ url_for('static', filename='common.js') }}"></script>
+    <script src="{{ url_for('static', filename='history.js') }}"></script>
+</body>
+</html>

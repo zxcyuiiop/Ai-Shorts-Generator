@@ -810,6 +810,16 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/history")
+def history_page():
+    return render_template("history.html")
+
+
+@app.route("/settings")
+def settings_page():
+    return render_template("settings.html")
+
+
 @app.route("/api/settings", methods=["GET"])
 def get_settings():
     """Return saved settings, with secrets masked."""

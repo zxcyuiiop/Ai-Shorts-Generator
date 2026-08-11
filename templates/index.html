@@ -43,6 +43,11 @@
                 <button id="save-settings-btn" class="btn-secondary" type="button">Сохранить настройки</button>
             </div>
         </header>
+        <nav class="page-nav" aria-label="Разделы">
+            <a href="/" class="active" aria-current="page">Генерация</a>
+            <a href="/history">История</a>
+            <a href="/settings">Настройки</a>
+        </nav>
 
         <main>
             <!-- ===== Queue ===== -->
@@ -687,6 +692,7 @@
             }
         });
     </script>
+    <script src="{{ url_for('static', filename='common.js') }}"></script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>
