@@ -55,7 +55,7 @@ Rules:
 - Each highlight must be a self‑contained narrative unit: it should convey a complete idea, emotion, or story beat (setup → conflict → payoff, or a full anecdote, joke, or insight) that can be understood without any prior context from the video. If a concept relies on earlier information, briefly recap that information within the highlight so the clip stands on its own.
 - Clips must not overlap significantly with each other
 - Score 0-100 on viral potential (not general quality)
-- {num_clips_instruction}
+- {num_clips_instruction}. Aim for DISTINCT moments spread across the whole video — do not stop early if more good moments exist
 - For each highlight, identify the single best "hook_sentence" — the opening line that would make someone stop scrolling
 - Explain in one sentence why this clip is viral ("virality_reason")
 - LANGUAGE: write "title", "hook_sentence" and "virality_reason" strictly in the language the transcript is spoken in (Russian speech → Russian text, English speech → English text). Never translate into another language.
@@ -304,11 +304,13 @@ def call_highlight_api(
     llm_fn: LLMFn = call_muapi_llm,
     clip_length: Optional[str] = None,
 ) -> Dict:
-    # Ask for ~2× the user's target so dedupe has headroom, but cap so the model
-    # doesn't have to generate a huge JSON payload (which times out gpt-5-mini).
+    # Ask for more than the user wants so dedupe has headroom, but don't undercut
+    # the target: "at least N" makes the model stop at N, and after dedupe and the
+    # length filter fewer than num_clips clips survive. Ask for the FULL target.
     target = max(num_clips * 2, 5)
     natural_max = max(2 if is_chunk else 3, int(duration / 90))
-    min_clips = min(target, natural_max, 8)
+    # The old cap of 8 was what made a request for 10 clips collapse to ~4.
+    min_clips = min(target, max(natural_max, num_clips), num_clips)
     preset = get_length_preset(clip_length)
     system = HIGHLIGHT_SYSTEM_PROMPT.format(
         virality_criteria=VIRALITY_CRITERIA,
