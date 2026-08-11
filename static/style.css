@@ -1326,6 +1326,25 @@ input[type="range"]::-moz-range-thumb {
     margin-top: 0;
 }
 
+/* Watermark preview: small thumbnail under the upload row. */
+.watermark-block .form-row {
+    margin-top: var(--space-3);
+}
+
+.watermark-preview {
+    display: block;
+    max-width: 120px;
+    max-height: 120px;
+    margin-top: var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: repeating-conic-gradient(#2a2a32 0% 25%, #1c1c22 0% 50%) 0 0 / 16px 16px;
+}
+
+.watermark-preview.hidden {
+    display: none;
+}
+
 /* ---------- Toasts ---------- */
 #toast-root {
     position: fixed;

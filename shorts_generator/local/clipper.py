@@ -680,6 +680,41 @@ def finalize_clip_local(out_path: str, aspect_ratio: str,
         except Exception as e:
             print(f"[title] skipped: {e}", flush=True)
 
+    # Custom watermark pause: after the title, BEFORE the TikTok overlay, so
+    # the logo fades over the finished frame (captions burned earlier are
+    # intentionally duplicated across the freeze — the burned subtitle of that
+    # moment stays visible during the pause, which is by design).
+    if True:  # match the sibling stages' try/except shape
+        try:
+            from .watermark import (apply_watermark_pause, watermark_enabled,
+                                    _resolve_image, _probe as _wm_probe)
+            if watermark_enabled():
+                wm_settings = {
+                    "at": env("WATERMARK_AT_SEC", "2.0"),
+                    "duration": env("WATERMARK_DURATION_SEC", "1.5"),
+                    "scale": env("WATERMARK_SCALE", "35"),
+                }
+                wm_image = _resolve_image(env("WATERMARK_FILE", ""))
+                has_audio, duration, fps, width, height = _wm_probe(out_path)
+                tmp_wm = out_path + ".watermark.mp4"
+                try:
+                    apply_watermark_pause(
+                        out_path, tmp_wm, wm_image,
+                        wm_settings["at"], wm_settings["duration"],
+                        wm_settings["scale"])
+                    os.replace(tmp_wm, out_path)
+                finally:
+                    if os.path.exists(tmp_wm):
+                        try:
+                            os.remove(tmp_wm)
+                        except OSError:
+                            pass
+        except Exception as e:
+            try:
+                print(f"[watermark] skipped: {e}", flush=True)
+            except UnicodeEncodeError:
+                pass
+
     # Overlay looping TikTok animation at the bottom if file exists
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
     overlay_path = os.path.join(base_dir, 'TIKTOK1.mov')

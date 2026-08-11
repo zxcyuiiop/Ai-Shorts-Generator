@@ -83,6 +83,8 @@ const SETTING_FIELDS = [
     'captions_enabled', 'caption_style', 'face_track',
     'caption_position', 'caption_margin_v',
     'title_enabled', 'title_y_from_bottom', 'title_font_size',
+    'watermark_enabled', 'watermark_at_sec', 'watermark_duration_sec',
+    'watermark_scale', 'watermark_file',
 ];
 
 const SECRET_MASK = '••••••••';
@@ -348,6 +350,7 @@ async function restoreSettings() {
     applyOverlaySettings(saved);
     updateMusicVolumeLabel();
     updateMusicFileLabel();
+    updateWatermarkFileLabel();
     if (saved.url && !queueUrlInput.value) queueUrlInput.value = saved.url;
     updateVisibleApiGroups();
     updateLocalFileVisibility();
@@ -504,6 +507,12 @@ function collectProcessingSettings() {
     const titleY = titleYRaw === '' ? null : clampNumberInput('title_y_from_bottom', 100, 1500);
     const titleSizeRaw = document.getElementById('title_font_size').value;
     const titleSize = titleSizeRaw === '' ? null : clampNumberInput('title_font_size', 24, 200);
+    const wmAtRaw = document.getElementById('watermark_at_sec').value;
+    const wmAt = wmAtRaw === '' ? null : clampNumberInput('watermark_at_sec', 0, 600);
+    const wmDurRaw = document.getElementById('watermark_duration_sec').value;
+    const wmDur = wmDurRaw === '' ? null : clampNumberInput('watermark_duration_sec', 0.3, 10);
+    const wmScaleRaw = document.getElementById('watermark_scale').value;
+    const wmScale = wmScaleRaw === '' ? null : clampNumberInput('watermark_scale', 5, 90);
     return {
         silence_cut: !!document.getElementById('silence_cut').checked,
         blur_bars: !!document.getElementById('blur_bars').checked,
@@ -518,6 +527,11 @@ function collectProcessingSettings() {
         title_enabled: !!document.getElementById('title_enabled').checked,
         title_y_from_bottom: titleY,
         title_font_size: titleSize,
+        watermark_enabled: !!document.getElementById('watermark_enabled').checked,
+        watermark_at_sec: wmAt,
+        watermark_duration_sec: wmDur,
+        watermark_scale: wmScale,
+        watermark_file: document.getElementById('watermark_file').value || '',
     };
 }
 
@@ -1363,6 +1377,9 @@ const CLAMP_FIELDS = [
     ['music_volume', 0, 100],
     ['title_y_from_bottom', 100, 1500],
     ['title_font_size', 24, 200],
+    ['watermark_at_sec', 0, 600],
+    ['watermark_duration_sec', 0.3, 10],
+    ['watermark_scale', 5, 90],
 ];
 CLAMP_FIELDS.forEach(([id, min, max]) => wireChange(id, () => clampNumberInput(id, min, max)));
 
@@ -1400,6 +1417,68 @@ wireChange('music_upload', () => {
     if (file) {
         label.textContent = `Выбран: ${file.name} — нажмите «Загрузить»`;
         label.title = '';
+    }
+});
+
+// ---------- Watermark (freeze-frame logo pause) wiring ----------
+
+// Превью текущей вотермарки: путь лежит в скрытом поле, а сервер отдаёт
+// файл из output/uploads/. Пустой путь — прячем картинку совсем.
+function updateWatermarkPreview(path) {
+    const preview = document.getElementById('watermark_preview');
+    if (!preview) return;
+    if (!path) {
+        preview.classList.add('hidden');
+        preview.removeAttribute('src');
+        return;
+    }
+    const name = path.split(/[\\/]/).pop();
+    preview.src = `/output/uploads/${name}?t=${Date.now()}`;  // cache-bust same-name re-upload
+    preview.classList.remove('hidden');
+}
+
+function updateWatermarkFileLabel() {
+    const path = document.getElementById('watermark_file').value || '';
+    const label = document.getElementById('watermark_file_label');
+    label.textContent = path ? path.split(/[\\/]/).pop() : '';
+    label.title = path;
+    updateWatermarkPreview(path);
+}
+
+wireClick('watermark_upload_btn', async () => {
+    const uploadInput = document.getElementById('watermark_upload');
+    const file = uploadInput.files && uploadInput.files[0];
+    if (!file) { showToast('Выберите изображение для вотермарки', 'error'); return; }
+    const btn = document.getElementById('watermark_upload_btn');
+    btn.disabled = true;
+    try {
+        const fd = new FormData();
+        fd.append('watermark', file);
+        const resp = await fetch('/api/upload/watermark', { method: 'POST', body: fd });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+        document.getElementById('watermark_file').value = data.path || '';
+        updateWatermarkFileLabel();
+        uploadInput.value = '';  // сброс, чтобы повторный выбор того же файла снова триггернул change
+        showToast(`Вотермарка загружена: ${data.filename || file.name}`, 'success');
+    } catch (e) {
+        showToast(e.message || 'Не удалось загрузить вотермарку', 'error');
+    } finally {
+        btn.disabled = false;
+    }
+});
+// Мгновенный отклик на выбор файла: локальное превью через blob-URL до клика
+// «Загрузить», чтобы было видно, что именно уйдёт на сервер.
+wireChange('watermark_upload', () => {
+    const uploadInput = document.getElementById('watermark_upload');
+    const file = uploadInput.files && uploadInput.files[0];
+    const label = document.getElementById('watermark_file_label');
+    const preview = document.getElementById('watermark_preview');
+    if (file) {
+        label.textContent = `Выбран: ${file.name} — нажмите «Загрузить»`;
+        label.title = '';
+        preview.src = URL.createObjectURL(file);
+        preview.classList.remove('hidden');
     }
 });
 
@@ -1496,6 +1575,7 @@ updateVisibleApiGroups();
 updateLocalFileVisibility();
 updateMusicVolumeLabel();
 updateMusicFileLabel();
+updateWatermarkFileLabel();
 restoreSettings();
 ensureResultsEmptyState();
 

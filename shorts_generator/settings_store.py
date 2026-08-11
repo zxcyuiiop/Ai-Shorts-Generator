@@ -49,6 +49,11 @@ GUI_ENV_ALIASES = {
     "caption_position": ("CAPTION_POSITION",),
     "face_track": ("FACE_TRACK_ENABLED",),
     "title_enabled": ("TITLE_ENABLED",),
+    "watermark_enabled": ("WATERMARK_ENABLED",),
+    "watermark_at_sec": ("WATERMARK_AT_SEC",),
+    "watermark_duration_sec": ("WATERMARK_DURATION_SEC",),
+    "watermark_scale": ("WATERMARK_SCALE",),
+    "watermark_file": ("WATERMARK_FILE",),
 }
 
 # Aliases are part of the persisted file, so they must survive load()'s filter
@@ -100,6 +105,12 @@ ALLOWED_FIELDS = SECRET_FIELDS | {alias for names in GUI_ENV_ALIASES.values() fo
     "title_enabled",
     "title_y_from_bottom",
     "title_font_size",
+    # Custom frame-pause watermark (shorts_generator/local/watermark.py)
+    "watermark_enabled",
+    "watermark_at_sec",
+    "watermark_duration_sec",
+    "watermark_scale",
+    "watermark_file",
 }
 
 MASK = "••••••••"

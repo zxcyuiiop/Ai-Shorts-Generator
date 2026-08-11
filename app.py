@@ -409,6 +409,11 @@ def _worker():
                 title_enabled=p.get("title_enabled"),
                 title_y_from_bottom=p.get("title_y_from_bottom"),
                 title_font_size=p.get("title_font_size"),
+                watermark_enabled=p.get("watermark_enabled"),
+                watermark_at_sec=p.get("watermark_at_sec"),
+                watermark_duration_sec=p.get("watermark_duration_sec"),
+                watermark_scale=p.get("watermark_scale"),
+                watermark_file=p.get("watermark_file"),
             )
         except Exception:  # background_task already records its own failures
             import traceback
@@ -503,7 +508,10 @@ def _overrides_from(mode, api_keys, whisper_device=None, whisper_model=None,
                     captions_enabled=None, caption_style=None, face_track=None,
                     caption_position=None, caption_margin_v=None,
                     title_enabled=None, title_y_from_bottom=None,
-                    title_font_size=None):
+                    title_font_size=None,
+                    watermark_enabled=None, watermark_at_sec=None,
+                    watermark_duration_sec=None, watermark_scale=None,
+                    watermark_file=None):
     """Translate browser field names into config setting names.
 
     Secrets arrive either as a real value or as the mask placeholder, which means
@@ -625,6 +633,39 @@ def _overrides_from(mode, api_keys, whisper_device=None, whisper_model=None,
         except (TypeError, ValueError):
             pass  # leave the env/default value in effect
 
+    # Frame-pause watermark (see shorts_generator/local/watermark.py): at
+    # WATERMARK_AT_SEC the picture freezes for WATERMARK_DURATION_SEC while the
+    # uploaded PNG fades in/out. Numbers clamped here; the module re-clamps too
+    # because the finalize thread may read the persisted file values directly.
+    if watermark_enabled is not None:
+        out["WATERMARK_ENABLED"] = "1" if _as_bool(watermark_enabled) else "0"
+    if watermark_at_sec is not None:
+        try:
+            out["WATERMARK_AT_SEC"] = str(
+                max(0.0, min(600.0, float(watermark_at_sec))))
+        except (TypeError, ValueError):
+            pass  # leave the env/default value in effect
+    if watermark_duration_sec is not None:
+        try:
+            out["WATERMARK_DURATION_SEC"] = str(
+                max(0.3, min(10.0, float(watermark_duration_sec))))
+        except (TypeError, ValueError):
+            pass  # leave the env/default value in effect
+    if watermark_scale is not None:
+        try:
+            out["WATERMARK_SCALE"] = str(
+                max(5, min(90, int(float(watermark_scale)))))
+        except (TypeError, ValueError):
+            pass  # leave the env/default value in effect
+    # Same stale-file guard as MUSIC_FILE: only forward a path that still
+    # points at a real file under the output dir; a renamed/deleted upload
+    # must not crash the pipeline, the stage just sits out.
+    if watermark_file:
+        candidate = os.path.realpath(str(watermark_file))
+        output_dir = os.path.realpath(LOCAL_OUTPUT_DIR)
+        if _same_or_parent(candidate, output_dir) and os.path.isfile(candidate):
+            out["WATERMARK_FILE"] = candidate
+
     if not api_keys:
         return out
 
@@ -665,7 +706,10 @@ def background_task(job_id, youtube_url, num_clips, aspect_ratio,
                     captions_enabled=None, caption_style=None, face_track=None,
                     caption_position=None, caption_margin_v=None,
                     title_enabled=None, title_y_from_bottom=None,
-                    title_font_size=None):
+                    title_font_size=None,
+                    watermark_enabled=None, watermark_at_sec=None,
+                    watermark_duration_sec=None, watermark_scale=None,
+                    watermark_file=None):
     """Run generate_shorts, streaming its own log output to the browser."""
     from shorts_generator.config import clear_overrides, set_overrides
 
@@ -682,7 +726,10 @@ def background_task(job_id, youtube_url, num_clips, aspect_ratio,
                                       captions_enabled, caption_style, face_track,
                                       caption_position, caption_margin_v,
                                       title_enabled, title_y_from_bottom,
-                                      title_font_size))
+                                      title_font_size,
+                                      watermark_enabled, watermark_at_sec,
+                                      watermark_duration_sec, watermark_scale,
+                                      watermark_file))
 
         with jobs_lock:
             jobs[job_id]["status"] = "running"
@@ -871,6 +918,49 @@ def upload_music():
     return jsonify({"ok": True, "filename": unique_name, "path": save_path}), 200
 
 
+WATERMARK_UPLOAD_DIR = os.path.join(os.path.abspath(LOCAL_OUTPUT_DIR), "uploads")
+# Must stay in sync with watermark.WATERMARK_EXTENSIONS -- the finalize stage
+# is what reads this file, so a type the module rejects must not reach it.
+ALLOWED_WATERMARK_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+@app.route("/api/upload/watermark", methods=["POST"])
+def upload_watermark():
+    """Accept a user watermark image and save it under output/uploads/.
+
+    Unlike music uploads the name is normalized to ``watermark.<ext>``: one
+    GUI slot means one current image, and the persisted WATERMARK_FILE path
+    must keep pointing at it across re-uploads (the frontend cache-busts the
+    preview with ``?t=`` so a same-name overwrite still repaints).
+    """
+    if "watermark" not in request.files:
+        return jsonify({"error": "No watermark file provided"}), 400
+
+    file = request.files["watermark"]
+    if not file or not file.filename:
+        return jsonify({"error": "Empty file"}), 400
+
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_WATERMARK_EXTENSIONS:
+        return jsonify({"error": f"Unsupported file type: {ext}"}), 400
+
+    os.makedirs(WATERMARK_UPLOAD_DIR, exist_ok=True)
+    filename = f"watermark{ext}"
+    save_path = os.path.join(WATERMARK_UPLOAD_DIR, filename)
+
+    if _save_upload_limited(file, save_path) is not None:
+        return jsonify({"error": _PAYLOAD_TOO_LARGE_RU}), 413
+
+    # The spec puts WATERMARK_FILE under the endpoint's own control (music
+    # instead leaves persistence to the settings form): the finalize thread
+    # reads the persisted value when no request overrides exist.
+    settings_store.save({"watermark_file": save_path})
+    rel = os.path.relpath(save_path, os.path.abspath(LOCAL_OUTPUT_DIR)) \
+        .replace("\\", "/")
+    return jsonify({"ok": True, "filename": filename, "path": save_path,
+                    "url": f"/output/{rel}"}), 200
+
+
 @app.route("/api/generate", methods=["POST"])
 def generate():
     # Accept JSON or a classic form post -- either way `data` is a plain dict.
@@ -990,6 +1080,11 @@ def generate():
         "title_enabled": data.get("title_enabled"),
         "title_y_from_bottom": data.get("title_y_from_bottom"),
         "title_font_size": data.get("title_font_size"),
+        "watermark_enabled": data.get("watermark_enabled"),
+        "watermark_at_sec": data.get("watermark_at_sec"),
+        "watermark_duration_sec": data.get("watermark_duration_sec"),
+        "watermark_scale": data.get("watermark_scale"),
+        "watermark_file": data.get("watermark_file"),
     }
     with jobs_lock:
         jobs[job_id] = {
@@ -1047,6 +1142,11 @@ def generate():
         "title_enabled": data.get("title_enabled"),
         "title_y_from_bottom": data.get("title_y_from_bottom"),
         "title_font_size": data.get("title_font_size"),
+        "watermark_enabled": data.get("watermark_enabled"),
+        "watermark_at_sec": data.get("watermark_at_sec"),
+        "watermark_duration_sec": data.get("watermark_duration_sec"),
+        "watermark_scale": data.get("watermark_scale"),
+        "watermark_file": data.get("watermark_file"),
         **{k: v for k, v in api_keys.items() if v},
     })
 
@@ -1414,6 +1514,9 @@ def _do_save(url, title=None, aspect_requested=None):
         p.get("caption_position"), p.get("caption_margin_v"),
         p.get("title_enabled"), p.get("title_y_from_bottom"),
         p.get("title_font_size"),
+        p.get("watermark_enabled"), p.get("watermark_at_sec"),
+        p.get("watermark_duration_sec"), p.get("watermark_scale"),
+        p.get("watermark_file"),
     )
 
     # Work on a temp sibling, never on the draft itself.
@@ -1759,6 +1862,9 @@ def finalize_short():
         p.get("caption_position"), p.get("caption_margin_v"),
         p.get("title_enabled"), p.get("title_y_from_bottom"),
         p.get("title_font_size"),
+        p.get("watermark_enabled"), p.get("watermark_at_sec"),
+        p.get("watermark_duration_sec"), p.get("watermark_scale"),
+        p.get("watermark_file"),
     )
 
     # Backup so a mid-crash can't lose the approved-but-not-yet-deleted draft.

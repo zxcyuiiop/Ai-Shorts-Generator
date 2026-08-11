@@ -361,6 +361,43 @@
                             <input type="range" id="music_volume" name="music_volume" min="0" max="100" step="1" value="40">
                         </div>
                     </div>
+
+                    <div class="music-block watermark-block">
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="watermark_enabled" name="watermark_enabled">
+                                <span>Вотермарка (пауза с логотипом)</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label for="watermark_upload">Изображение (PNG/JPG/WebP)</label>
+                            <div class="music-upload-row">
+                                <input type="file" id="watermark_upload"
+                                       accept="image/png,image/jpeg,image/webp">
+                                <button type="button" id="watermark_upload_btn" class="btn-secondary">Загрузить</button>
+                            </div>
+                            <div id="watermark_file_label" class="music-file-label"></div>
+                            <img id="watermark_preview" class="watermark-preview hidden" alt="Превью вотермарки">
+                            <input type="hidden" id="watermark_file" name="watermark_file" value="">
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="watermark_at_sec">Секунда паузы</label>
+                                <input type="number" id="watermark_at_sec" name="watermark_at_sec"
+                                       min="0" max="600" step="0.1" placeholder="2.0">
+                            </div>
+                            <div class="form-group">
+                                <label for="watermark_duration_sec">Длительность, с</label>
+                                <input type="number" id="watermark_duration_sec" name="watermark_duration_sec"
+                                       min="0.3" max="10" step="0.1" placeholder="1.5">
+                            </div>
+                            <div class="form-group">
+                                <label for="watermark_scale">Масштаб, % ширины</label>
+                                <input type="number" id="watermark_scale" name="watermark_scale"
+                                       min="5" max="90" step="1" placeholder="35">
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="form-section" id="local-options-row">
