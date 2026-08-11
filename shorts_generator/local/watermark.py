@@ -166,8 +166,7 @@ def apply_watermark_pause(in_path: str, out_path: str, image_path: str,
     try:
         at_sec = float(at_sec)
     except (TypeError, ValueError):
-        at_sec = 2.0
-    at_sec = max(0.0, min(_MAX_VIDEO_LEN, at_sec))
+        at_sec = None
 
     has_audio, duration, fps, width, height = _probe(in_path)
     if fps <= 0:
@@ -178,16 +177,22 @@ def apply_watermark_pause(in_path: str, out_path: str, image_path: str,
         raise RuntimeError(
             f"[watermark] input too short for a pause ({duration:.2f}s)")
 
-    # The freeze must start on a frame that actually exists: beyond the tail
-    # clamps to length-0.5s (and keeps the pre-roll non-negative).
-    if at_sec > duration - 0.5:
-        at_sec = max(0.0, duration - 0.5)
-
     try:
         duration_sec = float(duration_sec)
     except (TypeError, ValueError):
         duration_sec = 1.5
     duration_sec = max(0.3, min(10.0, duration_sec))
+
+    # Empty/None means "center": the freeze is placed so the pause lands in
+    # the middle of the clip.
+    if at_sec is None:
+        at_sec = duration / 2.0 - duration_sec / 2.0
+    at_sec = max(0.0, min(_MAX_VIDEO_LEN, at_sec))
+
+    # The freeze must start on a frame that actually exists: beyond the tail
+    # clamps to length-0.5s (and keeps the pre-roll non-negative).
+    if at_sec > duration - 0.5:
+        at_sec = max(0.0, duration - 0.5)
 
     try:
         scale_pct = float(scale_pct)
@@ -208,10 +213,16 @@ def apply_watermark_pause(in_path: str, out_path: str, image_path: str,
     # that drifts (an odd-height canvas would make scale= produce odd dims).
     v_main = (f"fps={fps:g},scale={width}:{height}:force_original_aspect_ratio=decrease,"
               f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,format=yuv420p,setsar=1")
+
     # One decode, three taps: pre / post / still-grab. A raw second ``[0:v]``
     # reference alongside the split outputs starves the graph — the two taps
     # get frames alternately and the loop branch blocks forever (observed as
     # an ffmpeg hang past the 180 s timeout), so split drives all three.
+    #
+    # Banner animation: the logo fades in/out over the frozen frame while the
+    # video is paused. A zoompan-based pop-in was tried and abandoned: the
+    # dynamic dimension expressions fail hard validation on some ffmpeg
+    # builds, and the fade reads cleanly as a pause-and-brand beat on its own.
     fc = (
         f"[0:v]split=3[vin_pre][vin_after][vin_still];"
         f"[vin_pre]trim=0:{at_sec:.6f},setpts=PTS-STARTPTS,{v_main}[v_pre];"
