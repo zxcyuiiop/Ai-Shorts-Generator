@@ -546,8 +546,8 @@ async function addToQueue(url) {
 // ---------- Review mode ----------
 let reviewShorts = [];
 let reviewIndex = 0;
-// Кнопки текущей карточки — нужны шорткатам (S/Del/→), чтобы не искать их по DOM.
-let reviewControls = { save: null, del: null, next: null };
+// Кнопки текущей карточки — нужны шорткатам (S/Del/←/→), чтобы не искать их по DOM.
+let reviewControls = { save: null, del: null, next: null, prev: null, video: null };
 // Выбранные для пакетного сохранения клипы (url -> true). Обновляется чекбоксами.
 const reviewQueueSelection = new Set();
 let reviewBatchRunning = false;
@@ -592,6 +592,8 @@ function applySavedState(short, data, { badge, meta, saveBtn, hint, title }) {
     if (short._queueCb) { short._queueCb.checked = false; short._queueCb.disabled = true; }
     pruneQueueSelection();
     updateSaveSelectedBtn();
+    updateReviewCounter();
+    refreshCurrentDot();
 }
 
 // Пакетное сохранение отмеченных черновиков через /api/shorts/save_batch.
@@ -704,8 +706,12 @@ function openReview() {
     reviewDone.classList.add('hidden');
     reviewBody.classList.remove('hidden');
     renderReview();
+    // Подкручиваем карточку вверх страницы: ревью открывается ниже формы
+    // генерации, и без этого пользователь видит лишь старую форму.
+    reviewSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
     // Переносим фокус на карточку: иначе после автоматического открытия
     // ревью клавиатурный пользователь остаётся в другом конце страницы.
+    // focus visible ловит фокус на точках/кнопках навигации и табомпетенцию.
     const card = reviewSection.querySelector('.review-card');
     if (card) card.focus();
 }
@@ -718,7 +724,7 @@ function closeReview() {
     // заново с сервера, чтобы карточки не висели с устаревшим url/saved.
     reviewShorts = [];
     reviewIndex = 0;
-    reviewControls = { save: null, del: null, next: null };
+    reviewControls = { save: null, del: null, next: null, prev: null, video: null };
     reviewQueueSelection.clear();
     reviewBatchRunning = false;
     updateSaveSelectedBtn();
@@ -729,10 +735,71 @@ function formatDuration(sec) {
     return `${Math.round(sec)} с`;
 }
 
+// Заголовок счётчика: где мы + сколько уже сохранено. Обновляется при каждом
+// рендере и после каждого одиночного/пакетного сохранения.
+function updateReviewCounter() {
+    if (!reviewShorts.length) { reviewCounter.textContent = ''; return; }
+    const saved = reviewShorts.filter(s => s && s.saved).length;
+    reviewCounter.textContent =
+        `Клип ${Math.min(reviewIndex + 1, reviewShorts.length)} из ${reviewShorts.length}`
+        + (saved ? ` · сохранено ${saved}` : '');
+}
+
+function refreshCurrentDot() {
+    reviewShorts.forEach((s, i) => {
+        if (!s || !s._dot) return;
+        s._dot.className = 'review-dot'
+            + (i === reviewIndex ? ' is-current' : '')
+            + (s.saved ? ' is-saved' : '');
+    });
+}
+
+// Точки-навигатор: одна на клип, клик прыгает к карточке. Текущая подсвечена
+// акцентом, сохранённые — зелёные. На клип вешается ссылка _dot, чтобы
+// applySavedState мог перекрасить её без полного перерендера.
+// При числе клипов > 9 показываем только края и окно ±2 вокруг текущей:
+// длинный ряд точек нечитаем, а прыгать дальше пяти шагов всё равно никто не будет.
+function renderReviewDots(nav) {
+    const dotsWrap = nav.querySelector('.review-dots');
+    if (!dotsWrap) return;
+    dotsWrap.innerHTML = '';
+    const total = reviewShorts.length;
+    const keep = (i) => total <= 9 || i === 0 || i === total - 1 || Math.abs(i - reviewIndex) <= 2;
+    let gapShown = false;
+    reviewShorts.forEach((s, i) => {
+        if (!keep(i)) {
+            // Одно многоточие на «схлопнутый» кусок — туда попадают несколько точек подряд.
+            if (!gapShown) {
+                const gap = document.createElement('span');
+                gap.className = 'review-dot-gap';
+                gap.textContent = '…';
+                gap.setAttribute('aria-hidden', 'true');
+                dotsWrap.appendChild(gap);
+                gapShown = true;
+            }
+            return;
+        }
+        gapShown = false;
+        const dot = document.createElement('button');
+        dot.type = 'button';
+        dot.className = 'review-dot'
+            + (i === reviewIndex ? ' is-current' : '')
+            + (s && s.saved ? ' is-saved' : '');
+        const label = `Клип ${i + 1}` + (s && s.saved ? ' (сохранён)' : '');
+        dot.setAttribute('aria-label', label);
+        if (i === reviewIndex) dot.setAttribute('aria-current', 'true');
+        dot.title = label;
+        if (s && s.score != null) dot.title += ` · виральность ${Math.round(s.score)}`;
+        dot.addEventListener('click', () => { reviewIndex = i; renderReview(); });
+        s._dot = dot;
+        dotsWrap.appendChild(dot);
+    });
+}
+
 function renderReview() {
     const short = reviewShorts[reviewIndex];
     if (!short) { finishReview(); return; }
-    reviewCounter.textContent = `Клип ${reviewIndex + 1} из ${reviewShorts.length}`;
+    updateReviewCounter();
     reviewBody.innerHTML = '';
     reviewDone.classList.add('hidden');
     reviewBody.classList.remove('hidden');
@@ -771,6 +838,25 @@ function renderReview() {
     queueLbl.textContent = 'В очередь';
     queueWrap.append(queueCb, queueLbl);
     if (!short.saved) meta.appendChild(queueWrap);
+
+    // Виральность хайлайта — число есть у всех свежих клипов; у старых тихо молчим.
+    if (typeof short.score === 'number' && short.score >= 0) {
+        const scoreRow = document.createElement('div');
+        scoreRow.className = 'review-score';
+        const scoreLbl = document.createElement('span');
+        scoreLbl.textContent = 'Виральность';
+        const bar = document.createElement('span');
+        bar.className = 'review-score-bar';
+        const fill = document.createElement('span');
+        fill.className = 'review-score-fill';
+        fill.style.width = `${Math.max(0, Math.min(100, short.score))}%`;
+        bar.appendChild(fill);
+        const val = document.createElement('span');
+        val.className = 'review-score-val';
+        val.textContent = String(Math.round(short.score));
+        scoreRow.append(scoreLbl, bar, val);
+        meta.appendChild(scoreRow);
+    }
 
     const videoWrap = document.createElement('div');
     videoWrap.className = 'review-videowrap';
@@ -858,8 +944,32 @@ function renderReview() {
         }
     });
 
-    actions.append(previewBtn, saveBtn, nextBtn, trimBtn, deleteBtn, thumbBtn, copyBtn, rerunBtn);
-    reviewControls = { save: saveBtn, del: deleteBtn, next: nextBtn };
+    // «Назад» сидит в review-nav (создаётся ниже), но живёт в том же ряду по
+    // смыслу: бесшумный сосед «Далее» для возврата без сброса прогресса.
+    const prevBtn = document.createElement('button');
+    prevBtn.type = 'button';
+    prevBtn.className = 'btn-secondary review-nav-btn';
+    prevBtn.textContent = '‹ Назад';
+    prevBtn.disabled = reviewIndex === 0;
+    prevBtn.addEventListener('click', () => { if (reviewIndex > 0) { reviewIndex -= 1; renderReview(); } });
+
+    // Основной ряд: только ежедневные действия. Остальное уезжает во
+    // вторичный ряд — иначе восемь кнопок одного веса читаются как шум.
+    actions.append(previewBtn, saveBtn, nextBtn, deleteBtn);
+    const secondary = document.createElement('div');
+    secondary.className = 'review-actions-secondary';
+    secondary.append(trimBtn, thumbBtn, copyBtn, rerunBtn);
+
+    // Навигация по клипам: ←, точки, →. Точки позволяют пропустить заведомо
+    // плохой клип без семи кликов «Далее» и вернуться после.
+    const nav = document.createElement('div');
+    nav.className = 'review-nav';
+    nextBtn.classList.add('review-nav-btn');
+    nav.append(prevBtn, document.createElement('div'), nextBtn);
+    nav.children[1].className = 'review-dots';
+    renderReviewDots(nav);
+
+    reviewControls = { save: saveBtn, del: deleteBtn, next: nextBtn, prev: prevBtn, video: video };
     // Отложенные ссылки на элементы карточки — пакетное сохранение помечает
     // карточку «Сохранено» тем же путём, что и одиночное (шевр.-кнопка и т.п.).
     short._meta = meta; short._badge = badge; short._saveBtn = saveBtn;
@@ -869,7 +979,7 @@ function renderReview() {
     // Шорткаты под кнопками — видимая подсказка, что ревью можно вести с клавиатуры.
     const shortcuts = document.createElement('div');
     shortcuts.className = 'review-shortcuts';
-    const SHORTCUT_HINTS = [['S', 'сохранить'], ['Del', 'удалить'], ['→', 'далее'], ['Space', 'пауза'], ['Esc', 'закрыть']];
+    const SHORTCUT_HINTS = [['S', 'сохранить'], ['Del', 'удалить'], ['←', 'назад'], ['→', 'далее'], ['Space', 'пауза'], ['Esc', 'закрыть']];
     for (const [key, labelText] of SHORTCUT_HINTS) {
         const item = document.createElement('span');
         item.className = 'shortcut-item';
@@ -941,7 +1051,7 @@ function renderReview() {
         trim.wrap.classList.toggle('hidden');
     });
 
-    reviewBody.append(meta, videoWrap, actions, shortcuts, hint, trim.wrap);
+    reviewBody.append(meta, videoWrap, actions, nav, secondary, shortcuts, hint, trim.wrap);
 
     const thumbWrap = document.createElement('div');
     thumbWrap.className = 'review-thumbnail hidden';
@@ -1210,7 +1320,13 @@ function sortShortsForReview(shorts) {
 // Шорткаты ревью: только когда ревью видимо и фокус не в поле ввода/плеере.
 document.addEventListener('keydown', (e) => {
     if (reviewSection.classList.contains('hidden')) return;
-    if (e.key === 'Escape') { closeReview(); return; }
+    if (e.key === 'Escape') {
+        // Паузим плеер до его сноса из DOM: с рефа на removed video у нас ещё
+        // есть шанс остановить звук, иначе он продолжит играть в фоне.
+        if (reviewControls.video) { try { reviewControls.video.pause(); } catch (_) {} }
+        closeReview();
+        return;
+    }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const t = e.target;
     if (t && (t.closest('input, textarea, select, video, [contenteditable="true"]'))) return;
@@ -1224,10 +1340,27 @@ document.addEventListener('keydown', (e) => {
         case 'Delete':
             if (reviewControls.del && !reviewControls.del.disabled) reviewControls.del.click();
             break;
-        case 'ArrowRight': case ' ':
+        case 'ArrowLeft':
+            if (reviewControls.prev && !reviewControls.prev.disabled) {
+                e.preventDefault();
+                reviewControls.prev.click();
+            }
+            break;
+        case 'ArrowRight':
             if (reviewControls.next && !reviewControls.next.disabled) {
                 e.preventDefault();
                 reviewControls.next.click();
+            }
+            break;
+        case ' ':
+            // Space на карточке — пауза/пуск плеера, как в любом видеосервисе.
+            if (reviewControls.video) {
+                e.preventDefault();
+                if (reviewControls.video.paused) {
+                    reviewControls.video.play().catch(() => {});
+                } else {
+                    reviewControls.video.pause();
+                }
             }
             break;
     }
