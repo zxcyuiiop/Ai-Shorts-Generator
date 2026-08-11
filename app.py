@@ -406,6 +406,9 @@ def _worker():
                 face_track=p["face_track"],
                 caption_position=p["caption_position"],
                 caption_margin_v=p["caption_margin_v"],
+                title_enabled=p.get("title_enabled"),
+                title_y_from_bottom=p.get("title_y_from_bottom"),
+                title_font_size=p.get("title_font_size"),
             )
         except Exception:  # background_task already records its own failures
             import traceback
@@ -498,7 +501,9 @@ def _overrides_from(mode, api_keys, whisper_device=None, whisper_model=None,
                     music_enabled=None, music_file=None, music_volume=None,
                     silence_cut=None, blur_bars=None,
                     captions_enabled=None, caption_style=None, face_track=None,
-                    caption_position=None, caption_margin_v=None):
+                    caption_position=None, caption_margin_v=None,
+                    title_enabled=None, title_y_from_bottom=None,
+                    title_font_size=None):
     """Translate browser field names into config setting names.
 
     Secrets arrive either as a real value or as the mask placeholder, which means
@@ -602,6 +607,24 @@ def _overrides_from(mode, api_keys, whisper_device=None, whisper_model=None,
     if face_track is not None:
         out["FACE_TRACK_ENABLED"] = "1" if _as_bool(face_track) else "0"
 
+    # Highlight title drawn over the video near the bottom (see
+    # shorts_generator/local/title_draw.py). Numbers are clamped server-side so
+    # a junk form value cannot push the text off-canvas.
+    if title_enabled is not None:
+        out["TITLE_ENABLED"] = "1" if _as_bool(title_enabled) else "0"
+    if title_y_from_bottom is not None:
+        try:
+            out["TITLE_Y_FROM_BOTTOM"] = str(
+                max(100, min(1500, int(float(title_y_from_bottom)))))
+        except (TypeError, ValueError):
+            pass  # leave the env/default value in effect
+    if title_font_size is not None:
+        try:
+            out["TITLE_FONT_SIZE"] = str(
+                max(24, min(200, int(float(title_font_size)))))
+        except (TypeError, ValueError):
+            pass  # leave the env/default value in effect
+
     if not api_keys:
         return out
 
@@ -640,7 +663,9 @@ def background_task(job_id, youtube_url, num_clips, aspect_ratio,
                     music_enabled=None, music_file=None, music_volume=None,
                     silence_cut=None, blur_bars=None,
                     captions_enabled=None, caption_style=None, face_track=None,
-                    caption_position=None, caption_margin_v=None):
+                    caption_position=None, caption_margin_v=None,
+                    title_enabled=None, title_y_from_bottom=None,
+                    title_font_size=None):
     """Run generate_shorts, streaming its own log output to the browser."""
     from shorts_generator.config import clear_overrides, set_overrides
 
@@ -655,7 +680,9 @@ def background_task(job_id, youtube_url, num_clips, aspect_ratio,
                                       music_enabled, music_file, music_volume,
                                       silence_cut, blur_bars,
                                       captions_enabled, caption_style, face_track,
-                                      caption_position, caption_margin_v))
+                                      caption_position, caption_margin_v,
+                                      title_enabled, title_y_from_bottom,
+                                      title_font_size))
 
         with jobs_lock:
             jobs[job_id]["status"] = "running"
@@ -960,6 +987,9 @@ def generate():
         "face_track": face_track,
         "caption_position": caption_position,
         "caption_margin_v": caption_margin_v,
+        "title_enabled": data.get("title_enabled"),
+        "title_y_from_bottom": data.get("title_y_from_bottom"),
+        "title_font_size": data.get("title_font_size"),
     }
     with jobs_lock:
         jobs[job_id] = {
@@ -1014,6 +1044,9 @@ def generate():
         "face_track": face_track,
         "caption_position": caption_position,
         "caption_margin_v": caption_margin_v,
+        "title_enabled": data.get("title_enabled"),
+        "title_y_from_bottom": data.get("title_y_from_bottom"),
+        "title_font_size": data.get("title_font_size"),
         **{k: v for k, v in api_keys.items() if v},
     })
 
@@ -1385,6 +1418,8 @@ def save_short():
         p.get("silence_cut"), p.get("blur_bars"),
         p.get("captions_enabled"), p.get("caption_style"), p.get("face_track"),
         p.get("caption_position"), p.get("caption_margin_v"),
+        p.get("title_enabled"), p.get("title_y_from_bottom"),
+        p.get("title_font_size"),
     )
 
     # Work on a temp sibling, never on the draft itself.
@@ -1416,7 +1451,10 @@ def save_short():
             shutil.copy2(abs_path, tmp)
         else:
             _reframe_vertical(abs_path, tmp, aspect)
-        finalize_clip_local(tmp, aspect, captions_ass=captions_ass)
+        # The optional payload title doubles as (a) the saved filename and
+        # (b) the text burned into the video near the bottom.  Forward it here.
+        finalize_clip_local(tmp, aspect, captions_ass=captions_ass,
+                            title_text=(data.get("title") or ""))
     except Exception as e:
         for path in leftover:
             try:
@@ -1672,6 +1710,8 @@ def finalize_short():
         p.get("silence_cut"), p.get("blur_bars"),
         p.get("captions_enabled"), p.get("caption_style"), p.get("face_track"),
         p.get("caption_position"), p.get("caption_margin_v"),
+        p.get("title_enabled"), p.get("title_y_from_bottom"),
+        p.get("title_font_size"),
     )
 
     # Backup so a mid-crash can't lose the approved-but-not-yet-deleted draft.

@@ -153,7 +153,7 @@ def run_save_endpoint_checks():
                 f.write(b"reframed:" + aspect.encode())
             return out_path
 
-        def finalize_touches(path, aspect, captions_ass=None):
+        def finalize_touches(path, aspect, captions_ass=None, title_text=None):
             with open(path, "ab") as f:
                 f.write(b"+fx")
 
@@ -198,7 +198,7 @@ def run_save_endpoint_checks():
         draft_rel2 = f"{rel_dir}/draft_02.mp4"
         draft_url2 = f"/output/{draft_rel2}"
 
-        def finalize_raises(path, aspect, captions_ass=None):
+        def finalize_raises(path, aspect, captions_ass=None, title_text=None):
             with open(path, "ab") as f:
                 f.write(b"partial")
             raise RuntimeError("face-track exploded")
@@ -261,7 +261,7 @@ def run_save_overwrite_check():
         rel_dir = os.path.relpath(tmp, os.path.abspath(webapp.LOCAL_OUTPUT_DIR)).replace("\\", "/")
         clip._reframe_vertical = Recorder(
             fn=lambda i, o, a: open(o, "wb").write(open(i, "rb").read()))
-        clip.finalize_clip_local = Recorder(fn=lambda p, a, captions_ass=None: open(p, "ab").write(b"+fx"))
+        clip.finalize_clip_local = Recorder(fn=lambda p, a, captions_ass=None, title_text=None: open(p, "ab").write(b"+fx"))
 
         for body in (b"v1", b"v2"):
             draft_abs = os.path.join(tmp, "clip.mp4")
@@ -314,7 +314,7 @@ def run_save_captions_sidecar_check():
         clip._reframe_vertical = Recorder(
             fn=lambda i, o, a: open(o, "wb").write(open(i, "rb").read()))
         # finalize with a captions_ass kwarg must burn (append) and NOT touch sidecar
-        def fake_finalize(path, aspect, captions_ass=None):
+        def fake_finalize(path, aspect, captions_ass=None, title_text=None):
             with open(path, "ab") as f:
                 f.write(b"+fx")
             return path

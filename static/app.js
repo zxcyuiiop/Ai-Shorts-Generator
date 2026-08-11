@@ -81,6 +81,7 @@ const SETTING_FIELDS = [
     'silence_cut', 'blur_bars', 'music_enabled', 'music_file', 'music_volume',
     'captions_enabled', 'caption_style', 'face_track',
     'caption_position', 'caption_margin_v',
+    'title_enabled', 'title_y_from_bottom', 'title_font_size',
 ];
 
 const SECRET_MASK = '••••••••';
@@ -494,9 +495,14 @@ function collectProcessingSettings() {
     // endpoint ignores them until the backend plumbing lands, but save-settings
     // already persists them.
     const volume = clampNumberInput('music_volume', 0, 100);
-    // Empty margin box -> null ("use the backend default") rather than 0.
+    // Empty boxes -> null ("use the backend default") rather than 0; the
+    // backend clamps title_y_from_bottom/title_font_size to their ranges.
     const marginRaw = document.getElementById('caption_margin_v').value;
     const margin = marginRaw === '' ? null : clampNumberInput('caption_margin_v', 0, 1200);
+    const titleYRaw = document.getElementById('title_y_from_bottom').value;
+    const titleY = titleYRaw === '' ? null : clampNumberInput('title_y_from_bottom', 100, 1500);
+    const titleSizeRaw = document.getElementById('title_font_size').value;
+    const titleSize = titleSizeRaw === '' ? null : clampNumberInput('title_font_size', 24, 200);
     return {
         silence_cut: !!document.getElementById('silence_cut').checked,
         blur_bars: !!document.getElementById('blur_bars').checked,
@@ -508,6 +514,9 @@ function collectProcessingSettings() {
         face_track: !!document.getElementById('face_track').checked,
         caption_position: document.getElementById('caption_position').value,
         caption_margin_v: margin,
+        title_enabled: !!document.getElementById('title_enabled').checked,
+        title_y_from_bottom: titleY,
+        title_font_size: titleSize,
     };
 }
 
@@ -1216,6 +1225,8 @@ const CLAMP_FIELDS = [
     ['caption_margin_v', 0, 1200],
     ['overlay_margin', 0, 200],
     ['music_volume', 0, 100],
+    ['title_y_from_bottom', 100, 1500],
+    ['title_font_size', 24, 200],
 ];
 CLAMP_FIELDS.forEach(([id, min, max]) => wireChange(id, () => clampNumberInput(id, min, max)));
 

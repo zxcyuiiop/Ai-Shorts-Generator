@@ -98,7 +98,7 @@ def run_save_title_checks():
         rel_dir = os.path.relpath(tmp, os.path.abspath(webapp.LOCAL_OUTPUT_DIR)).replace("\\", "/")
         clip._reframe_vertical = Recorder(
             fn=lambda i, o, a: open(o, "wb").write(open(i, "rb").read()))
-        clip.finalize_clip_local = Recorder(fn=lambda p, a, captions_ass=None: open(p, "ab").write(b"+fx"))
+        clip.finalize_clip_local = Recorder(fn=lambda p, a, captions_ass=None, title_text=None: open(p, "ab").write(b"+fx"))
 
         def new_draft(job_id, name, title=None):
             draft_abs = os.path.join(tmp, name)

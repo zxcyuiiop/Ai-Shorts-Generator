@@ -611,7 +611,8 @@ def crop_clip_local(
 
 def finalize_clip_local(out_path: str, aspect_ratio: str,
                         captions_ass: Optional[str] = None,
-                        blur_source: Optional[str] = None) -> str:
+                        blur_source: Optional[str] = None,
+                        title_text: Optional[str] = None) -> str:
     """Apply the visual/audio effects to a reframed clip, in place.
 
     Blur bars (9:16), TikTok-стайл оверлей и фоновая музыка — всё то, что
@@ -628,6 +629,11 @@ def finalize_clip_local(out_path: str, aspect_ratio: str,
     Караоке‑субтитры: когда включены (`CAPTIONS_ENABLED`), берём sidecar
     ``out_path+'.ass'`` (либо явный ``captions_ass``) и вжигаем ПОСЛЕ blurpad
     (чтобы попасть на готовый холст 1080×1920), но ДО оверлея/музыки.
+
+    ``title_text``: optional highlight title burned in as a drawtext pass AFTER
+    the caption burn and BEFORE the overlay (so the watermark animates over the
+    title, not under it). Controlled by TITLE_ENABLED / TITLE_Y_FROM_BOTTOM /
+    TITLE_FONT_SIZE; a failure logs ``[title]`` and never loses the clip.
     """
     # T10: blurred bars to 1080x1920 (9:16 only, env BLUR_BARS default '1').
     if blurpad_enabled_for(aspect_ratio):
@@ -662,6 +668,17 @@ def finalize_clip_local(out_path: str, aspect_ratio: str,
         else:
             print(f"[clip/local] captions enabled but sidecar missing ({ass}) — "
                   "skipping burn", flush=True)
+
+    # Highlight title: drawtext pass after captions, before overlay/music.
+    # Wrapped in try/except like every sibling stage — a failed title must
+    # never cost the clip.
+    title_text = (title_text or "").strip()
+    if title_text:
+        try:
+            from .title_draw import apply_title_drawtext
+            apply_title_drawtext(out_path, title_text)
+        except Exception as e:
+            print(f"[title] skipped: {e}", flush=True)
 
     # Overlay looping TikTok animation at the bottom if file exists
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))

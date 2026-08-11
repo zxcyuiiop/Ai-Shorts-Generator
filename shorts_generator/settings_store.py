@@ -48,6 +48,7 @@ GUI_ENV_ALIASES = {
     "captions_enabled": ("CAPTIONS_ENABLED",),
     "caption_position": ("CAPTION_POSITION",),
     "face_track": ("FACE_TRACK_ENABLED",),
+    "title_enabled": ("TITLE_ENABLED",),
 }
 
 # Aliases are part of the persisted file, so they must survive load()'s filter
@@ -95,6 +96,10 @@ ALLOWED_FIELDS = SECRET_FIELDS | {alias for names in GUI_ENV_ALIASES.values() fo
     "caption_position",
     "caption_margin_v",
     "face_track",
+    # Highlight title burned into the video (shorts_generator/local/title_draw.py)
+    "title_enabled",
+    "title_y_from_bottom",
+    "title_font_size",
 }
 
 MASK = "••••••••"
