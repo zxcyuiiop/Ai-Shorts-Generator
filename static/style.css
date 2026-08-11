@@ -2043,6 +2043,10 @@ kbd {
     justify-content: center;
 }
 
+.video-modal[hidden] {
+    display: none;
+}
+
 .video-modal-backdrop {
     position: absolute;
     inset: 0;
